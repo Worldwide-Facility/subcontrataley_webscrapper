@@ -69,7 +69,6 @@ def ejecutar(driver, wait) -> Path:
     resultado = rellenar_plantilla_liquidaciones(
         plantilla,
         periodo_gcs=periodo_gcs,
-        dir_transferencias_generadas=staging / "transferencias",
     )
     plantilla = resultado.plantilla
     logger.info(
@@ -79,7 +78,6 @@ def ejecutar(driver, wait) -> Path:
     )
     paths_liq = descargar_docs(resultado.docs_liquidacion, staging / "liquidaciones")
     paths_tr = descargar_docs(resultado.docs_transferencia, staging / "transferencias")
-    paths_tr.extend(resultado.transferencias_generadas)
 
     logger.info("Ir a pantalla de carga")
     click_xpath(driver, wait, xpk(driver, "liquidaciones.ir_a_cargar"))

@@ -1,8 +1,8 @@
 """Comprobante de transferencia de una línea, con el formato de nómina bancaria.
 
-Se usa cuando el trabajador está finiquitado, el líquido es mayor a 0
-y no hay PDF de transferencia en el bucket.
-La línea sale de la liquidación: RUT, nombre y TOTAL LIQUIDO.
+La carga de liquidaciones ya no lo genera. Lo construye el auditor
+(`cargas_documentos_instalaciones_webscrapper/construir_transferencias_finiquito.py`)
+y lo deja en GCS. Este módulo queda por si hay que regenerar uno a mano.
 """
 
 from __future__ import annotations
