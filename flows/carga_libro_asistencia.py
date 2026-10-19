@@ -22,6 +22,10 @@ from browser import (
     click_y_esperar_descarga,
     esperar_select_cargado,
     esperar_zona_documentos_habilitada,
+    nombres_archivo_plantilla,
+    verificar_archivos_dropzone,
+    esperar_resultado_validacion,
+    esperar_post_carga,
     screenshot,
     seleccionar_periodo_mes_anterior,
     seleccionar_por_texto,
@@ -64,6 +68,10 @@ def _esperar_clickable(driver, xpath: str, timeout: float = 300) -> None:
     WebDriverWait(driver, timeout).until(
         EC.element_to_be_clickable((By.XPATH, xpath))
     )
+
+
+def _esperar_resultado_validacion(driver, timeout: float = 180) -> None:
+    esperar_resultado_validacion(driver, timeout=timeout, etiqueta=NOMBRE, prefijo_shot="asist_e2e")
 
 
 def ejecutar(driver, wait) -> Path:
@@ -185,6 +193,13 @@ def ejecutar(driver, wait) -> Path:
         timeout=900,
         uno_a_uno=True,
     )
+    # --- 4b. Verificar que cada nombre_de_archivo de la plantilla esté en el dropzone ---
+    if not dry_run():
+        esperados = nombres_archivo_plantilla(relleno.plantilla)
+        verificar_archivos_dropzone(
+            driver, wait, zona_docs, esperados, relleno.pdfs,
+            reintentos=3, timeout_upload=300, etiqueta=NOMBRE,
+        )
     screenshot(driver, "asist_e2e_pdfs_listos.png")
 
     # --- 5. Validar Documentos ---
@@ -212,22 +227,13 @@ def ejecutar(driver, wait) -> Path:
             NOMBRE, relleno.plantilla.name, relleno.filas, len(relleno.pdfs), periodo_gcs,
         )
         return relleno.plantilla
-    # Esperar resultado 2.3 (plantilla correcta / 0 errores)
-    WebDriverWait(driver, 180).until(
-        lambda d: "0" in (d.page_source or "")
-        and (
-            "correcta" in (d.page_source or "").lower()
-            or "errores encontrados" in (d.page_source or "").lower()
-        )
-    )
-    time.sleep(2)
+    # Esperar resultado 2.3 explícito: botón Realizar habilitado (OK) o errores/modal.
+    _esperar_resultado_validacion(driver, timeout=180)
+    time.sleep(1)
     screenshot(driver, "asist_e2e_validado.png")
 
     # --- 6. Realizar Carga Masiva ---
     logger.info("[%s] Realizar Carga Masiva", NOMBRE)
-    _esperar_clickable(
-        driver, xpk(driver, "asistencias.btn_realizar_carga_masiva", timeout=180), timeout=180
-    )
     click_mutante(
         driver, wait, "asistencias.btn_realizar_carga_masiva",
         "click 'Realizar Carga Masiva' (carga definitiva)",
@@ -235,49 +241,8 @@ def ejecutar(driver, wait) -> Path:
     time.sleep(3)
     screenshot(driver, "asist_e2e_carga_masiva_click.png")
 
-    # --- 7. Esperar fin y botón post (solo cuando ya terminó) ---
-    logger.info("[%s] Esperando botón post-carga…", NOMBRE)
-    post_cands = candidatos("asistencias.btn_despues_carga_masiva")
-    # Alternativas por texto por si cambia el DOM tras la carga
-    post_alts = [
-        *post_cands,
-        "//button[contains(.,'Aceptar') or contains(.,'Continuar') or contains(.,'Finalizar') or contains(.,'Cerrar')]/span",
-        "//button[contains(.,'Aceptar') or contains(.,'Continuar') or contains(.,'Finalizar')]",
-    ]
-    clicked_post = False
-    t_end = time.time() + 600
-    while time.time() < t_end and not clicked_post:
-        for cand in post_alts:
-            try:
-                els = driver.find_elements(By.XPATH, cand)
-                for el in els:
-                    if el.is_displayed() and el.is_enabled():
-                        driver.execute_script(
-                            "arguments[0].scrollIntoView({block:'center'});", el
-                        )
-                        time.sleep(0.5)
-                        try:
-                            el.click()
-                        except Exception:
-                            driver.execute_script("arguments[0].click();", el)
-                        clicked_post = True
-                        logger.info("[%s] Post-carga click: %s", NOMBRE, cand)
-                        break
-                if clicked_post:
-                    break
-            except Exception:
-                continue
-        if not clicked_post:
-            time.sleep(2)
-    if not clicked_post:
-        screenshot(driver, "asist_e2e_sin_post_carga.png")
-        logger.warning(
-            "[%s] Carga masiva ok (sin botón post visible a tiempo); revisar UI",
-            NOMBRE,
-        )
-    else:
-        time.sleep(2)
-        screenshot(driver, "asist_e2e_post_carga.png")
+    # --- 7. Esperar fin y botón post (nunca re-clickea Realizar) ---
+    esperar_post_carga(driver, etiqueta=NOMBRE, prefijo_shot="asist_e2e", timeout=120)
 
     logger.info(
         "[%s] OK | excel=%s | faenas=%s | pdfs=%s | periodo=%s",

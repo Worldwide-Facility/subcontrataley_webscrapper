@@ -494,6 +494,7 @@ def esperar_zona_documentos_habilitada(
     zona_xpath: str,
     *,
     timeout: float = 120,
+    estable_s: float = 3.0,
 ) -> None:
     """
     Tras 'Cargar Excel', espera a que la zona de documentos acepte PDFs.
@@ -507,6 +508,7 @@ def esperar_zona_documentos_habilitada(
         return
     t0 = time.time()
     last_log = 0.0
+    estable_desde: float | None = None
     while time.time() - t0 < timeout:
         ok = driver.execute_script(
             """
@@ -517,22 +519,34 @@ def esperar_zona_documentos_habilitada(
             ).singleNodeValue;
             if (!zona) return false;
             const root = (zona.closest && zona.closest('.dropzone')) || zona;
+            // Zona realmente lista: visible, sin bloqueo, sin overlay de carga,
+            // con instancia Dropzone propia (no el fallback global) y habilitada.
+            if (root.offsetParent === null) return false;
             const txt = ((root.innerText || root.textContent || '') + '').toUpperCase();
             if (txt.includes('SUBA SU PLANTILLA ANTES')) return false;
-            if (root.dropzone && root.dropzone.hiddenFileInput
-                && !root.dropzone.hiddenFileInput.disabled) {
-                return true;
-            }
-            const multi = Array.from(
-                document.querySelectorAll('input.dz-hidden-input')
-            ).filter(i => i.multiple && !i.disabled);
-            return multi.length > 0;
+            if (root.classList.contains('dz-disabled')
+                || root.getAttribute('aria-disabled') === 'true') return false;
+            const busy = Array.from(document.querySelectorAll(
+                '.blockUI.blockOverlay, .swal2-loading'
+            )).some(e => e.offsetParent !== null);
+            if (busy) return false;
+            const dz = root.dropzone;
+            return !!(dz && dz.hiddenFileInput && !dz.hiddenFileInput.disabled
+                      && document.body.contains(dz.hiddenFileInput)
+                      && !(dz.getActiveFiles && dz.getActiveFiles().length));
             """,
             zona_xpath,
         )
         if ok:
-            logger.info("Zona de documentos habilitada (%.0fs)", time.time() - t0)
-            return
+            # Debe mantenerse lista de forma estable (el portal re-renderiza la
+            # zona tras procesar el Excel; enviar antes pierde los primeros PDFs).
+            if estable_desde is None:
+                estable_desde = time.time()
+            elif time.time() - estable_desde >= estable_s:
+                logger.info("Zona de documentos habilitada y estable (%.0fs)", time.time() - t0)
+                return
+        else:
+            estable_desde = None
         now = time.time()
         if now - last_log >= 5:
             logger.info(
@@ -791,6 +805,372 @@ def subir_archivos(
         esperar_uploads_completos(
             driver, xpath, n_min=base + len(paths), timeout=timeout
         )
+
+
+# ---------------------------------------------------------------------------
+# Verificación de archivos en Dropzone (reutilizable por todos los flujos)
+# ---------------------------------------------------------------------------
+
+JS_DZ_ARCHIVOS = """
+const xpath = arguments[0];
+const zona = document.evaluate(
+    xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+).singleNodeValue;
+if (!zona) return {found: false, files: []};
+const root = (zona.closest && zona.closest('.dropzone')) || zona;
+const out = [];
+const vistos = new Set();
+root.querySelectorAll('.dz-preview, .card.dz-success, .card.dz-complete, .card.dz-processing, .card.dz-error')
+  .forEach(p => {
+    if (vistos.has(p)) return;
+    vistos.add(p);
+    const n = p.querySelector('[data-dz-name]') || p.querySelector('.dz-filename span')
+           || p.querySelector('.dz-filename');
+    const name = n ? (n.textContent || '').trim() : '';
+    if (!name) return;
+    const em = p.querySelector('[data-dz-errormessage], .dz-error-message');
+    const errmsg = em ? (em.textContent || '').trim() : '';
+    const cl = p.classList;
+    out.push({
+      name: name,
+      error: cl.contains('dz-error'),
+      success: cl.contains('dz-success') || cl.contains('dz-complete'),
+      processing: cl.contains('dz-processing') && !cl.contains('dz-success')
+                  && !cl.contains('dz-complete') && !cl.contains('dz-error'),
+      errmsg: errmsg.slice(0, 200),
+    });
+  });
+// Estado interno de Dropzone.js (si existe) como complemento
+const dz = root.dropzone;
+const internos = (dz && dz.files) ? dz.files.map(f => ({name: f.name, status: f.status})) : null;
+return {found: true, files: out, dz_files: internos};
+"""
+
+
+def nombres_archivo_plantilla(
+    xlsx: Path, *, hoja: str | None = None, columna: str = "nombre_de_archivo"
+) -> list[str]:
+    """Lee los nombres (únicos, en orden) de la columna `nombre_de_archivo`."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(xlsx, read_only=True, data_only=True)
+    try:
+        if hoja is None:
+            from flows.plantilla_schema import HOJA_DOCUMENTOS
+
+            hoja = HOJA_DOCUMENTOS if HOJA_DOCUMENTOS in wb.sheetnames else wb.sheetnames[0]
+        ws = wb[hoja]
+        filas = ws.iter_rows(values_only=True)
+        cab = [str(c).strip().lower() if c is not None else "" for c in next(filas, [])]
+        if columna.lower() not in cab:
+            raise KeyError(f"No existe columna '{columna}' en hoja '{hoja}' de {xlsx}")
+        idx = cab.index(columna.lower())
+        out: list[str] = []
+        for fila in filas:
+            v = fila[idx] if idx < len(fila) else None
+            if v is None or str(v).strip() == "":
+                continue
+            s = str(v).strip()
+            if s not in out:
+                out.append(s)
+        return out
+    finally:
+        wb.close()
+
+
+def comparar_archivos_dropzone(esperados: list[str], visibles: list[dict]) -> dict:
+    """
+    Lógica pura (testeable offline). Coincidencia EXACTA de nombre.
+    visibles: [{name, error, success, processing}].
+    Un archivo cuenta como OK si al menos una preview con ese nombre no tiene error.
+    """
+    ok_names = {v["name"] for v in visibles if not v.get("error")}
+    err_names = {v["name"] for v in visibles if v.get("error")}
+    proc_names = {v["name"] for v in visibles if v.get("processing")}
+    esperados_u = list(dict.fromkeys(esperados))
+    faltan = [n for n in esperados_u if n not in ok_names and n not in err_names]
+    con_error = [n for n in esperados_u if n in err_names and n not in ok_names]
+    procesando = [n for n in esperados_u if n in proc_names]
+    extra = sorted({v["name"] for v in visibles} - set(esperados_u))
+    return {
+        "esperados": len(esperados_u),
+        "visibles": len({v["name"] for v in visibles}),
+        "faltan": faltan,
+        "con_error": con_error,
+        "procesando": procesando,
+        "extra": extra,
+        "ok": not faltan and not con_error,
+    }
+
+
+def leer_archivos_dropzone(driver, zona_xpath: str) -> list[dict]:
+    r = driver.execute_script(JS_DZ_ARCHIVOS, zona_xpath) or {}
+    return list(r.get("files") or [])
+
+
+def _quitar_previews_con_error(driver, zona_xpath: str, nombres: list[str]) -> None:
+    """Quita del Dropzone los archivos marcados con error (para re-subirlos limpio)."""
+    if not nombres:
+        return
+    driver.execute_script(
+        """
+        const zona = document.evaluate(arguments[0], document, null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+        if (!zona) return;
+        const root = (zona.closest && zona.closest('.dropzone')) || zona;
+        const nombres = new Set(arguments[1]);
+        const dz = root.dropzone;
+        if (dz && dz.files) {
+            dz.files.filter(f => nombres.has(f.name) && f.status === 'error')
+                .forEach(f => dz.removeFile(f));
+        }
+        """,
+        zona_xpath,
+        nombres,
+    )
+
+
+def verificar_archivos_dropzone(
+    driver,
+    wait: WebDriverWait,
+    zona_xpath: str,
+    esperados: list[str],
+    rutas: list[Path],
+    *,
+    reintentos: int = 3,
+    timeout_upload: float = 300,
+    etiqueta: str = "dropzone",
+) -> dict:
+    """
+    Compara los nombres visibles en el Dropzone con `esperados` (exacto).
+    Re-sube faltantes / con error hasta `reintentos` veces. Si persisten,
+    screenshot + RuntimeError listándolos.
+    """
+    if dry_run():
+        logger.warning("[DRY_RUN] se omitiría: verificar archivos en %s", etiqueta)
+        return {"ok": True, "dry_run": True}
+    por_nombre = {Path(p).name: Path(p) for p in rutas}
+    sin_ruta = [n for n in esperados if n not in por_nombre]
+    if sin_ruta:
+        logger.warning("[%s] Nombres de la plantilla sin PDF local: %s", etiqueta, sin_ruta)
+
+    def _esperar_sin_procesar(limite: float) -> list[dict]:
+        t0 = time.time()
+        vis = leer_archivos_dropzone(driver, zona_xpath)
+        while time.time() - t0 < limite:
+            if not any(v.get("processing") for v in vis):
+                break
+            time.sleep(1)
+            vis = leer_archivos_dropzone(driver, zona_xpath)
+        return vis
+
+    res: dict = {}
+    for intento in range(0, reintentos + 1):
+        vis = _esperar_sin_procesar(timeout_upload)
+        res = comparar_archivos_dropzone(esperados, vis)
+        logger.info(
+            "[%s] Verificación dropzone (intento %s/%s): esperados=%s visibles=%s "
+            "faltan=%s con_error=%s extra=%s",
+            etiqueta, intento, reintentos, res["esperados"], res["visibles"],
+            len(res["faltan"]), len(res["con_error"]), len(res["extra"]),
+        )
+        if res["ok"]:
+            return res
+        if res["faltan"]:
+            logger.warning("[%s] Faltan en dropzone: %s", etiqueta, res["faltan"])
+        if res["con_error"]:
+            errs = {v["name"]: v.get("errmsg") for v in vis if v.get("error")}
+            logger.warning(
+                "[%s] Con error en dropzone: %s",
+                etiqueta, {n: errs.get(n) for n in res["con_error"]},
+            )
+        if intento == reintentos:
+            break
+        resubir = [por_nombre[n] for n in res["faltan"] + res["con_error"] if n in por_nombre]
+        if not resubir:
+            break
+        _quitar_previews_con_error(driver, zona_xpath, res["con_error"])
+        logger.info("[%s] Re-subiendo %s archivo(s) (reintento %s)", etiqueta, len(resubir), intento + 1)
+        subir_archivos(driver, wait, zona_xpath, resubir, esperar=False, uno_a_uno=True)
+        time.sleep(2)
+
+    shot = screenshot(driver, f"{etiqueta.replace(' ', '_')}_dropzone_incompleto.png")
+    raise RuntimeError(
+        f"[{etiqueta}] Archivos no presentes/OK en dropzone tras {reintentos} reintentos: "
+        f"faltan={res.get('faltan')} con_error={res.get('con_error')} "
+        f"(esperados={res.get('esperados')} visibles={res.get('visibles')}) screenshot={shot}"
+    )
+
+
+def cargar_documentos_dropzone(
+    driver,
+    wait: WebDriverWait,
+    key: str,
+    rutas: list[Path],
+    *,
+    plantilla: Path | None = None,
+    columna: str = "nombre_de_archivo",
+    etiqueta: str = "carga",
+    timeout_zona: float = 180,
+    timeout_upload: float = 900,
+    reintentos: int = 3,
+) -> None:
+    """
+    Paso compartido para TODOS los flujos con dropzone:
+    1) espera la zona realmente lista (visible, Dropzone propio, estable);
+    2) sube uno a uno esperando cada archivo;
+    3) verifica nombres visibles vs `columna` de la plantilla (exacto),
+       re-sube faltantes/error hasta `reintentos` y si no, error claro + screenshot.
+    DRY_RUN: solo verifica el destino (no envía nada).
+    """
+    if not rutas:
+        logger.warning("[%s] Sin archivos para %s", etiqueta, key)
+        return
+    if dry_run():
+        enviar_archivos(driver, wait, key, rutas, multiples=True)
+        return
+    zona = xpk(driver, key, visible=False)
+    esperar_zona_documentos_habilitada(driver, zona, timeout=timeout_zona)
+    logger.info("[%s] Subiendo %s archivo(s) uno a uno → %s", etiqueta, len(rutas), zona)
+    subir_archivos(driver, wait, zona, rutas, esperar=True, timeout=timeout_upload, uno_a_uno=True)
+    if plantilla is not None:
+        esperados = nombres_archivo_plantilla(Path(plantilla), columna=columna)
+    else:
+        esperados = [Path(p).name for p in rutas]
+    verificar_archivos_dropzone(
+        driver, wait, zona, esperados, rutas,
+        reintentos=reintentos, timeout_upload=300, etiqueta=f"{etiqueta}:{columna}",
+    )
+
+
+JS_RESULTADO_VALIDACION = """
+const b = document.getElementById('cmsd_btn_realizar_carga_masiva');
+const vis = e => !!(e && e.offsetParent !== null);
+const txt = (document.body.innerText || '');
+let m = txt.match(/errores\\s+encontrados\\s*:\\s*(\\d+)/i)
+     || txt.match(/(\\d+)\\s*errores\\s+encontrados/i);
+if (m && parseInt(m[1], 10) > 0) return 'errores:' + m[1];
+// innerText solo incluye texto visible: cualquier aparición = fallo inmediato.
+const fm = txt.match(/[^\\n]*(planilla no v[a\u00e1]lida|subir plantilla nuevamente)[^\\n]*/i);
+if (fm) return 'invalida:' + fm[0].trim().slice(0, 200);
+if (vis(b) && !b.disabled) return 'ok';
+const modal = document.querySelector('.modal.in, .modal.show, .swal2-popup, .bootbox');
+if (modal && vis(modal) && /error|inv[a\u00e1]lid|no se pudo/i.test(modal.innerText || ''))
+    return 'modal:' + (modal.innerText || '').trim().slice(0, 200);
+return null;
+"""
+
+XP_DESCARGAR_REVISADA = (
+    "//button[contains(normalize-space(.),'Descargar Plantilla Revisada')]"
+    " | //a[contains(normalize-space(.),'Descargar Plantilla Revisada')]"
+)
+
+
+def comentarios_plantilla_revisada(xlsx: Path, etiqueta: str = "carga") -> list[tuple[int, str, str]]:
+    """(fila, nombre_de_archivo, comentario) de los comentarios de celda en columna A."""
+    from openpyxl import load_workbook
+
+    out: list[tuple[int, str, str]] = []
+    try:
+        wb = load_workbook(xlsx)  # comentarios requieren modo normal (no read_only)
+    except Exception as exc:
+        logger.warning("[%s] No se pudo abrir plantilla revisada %s: %s", etiqueta, xlsx, exc)
+        return out
+    for ws in wb.worksheets:
+        cab = [str(c.value or "").strip().lower() for c in ws[1]]
+        col_n = cab.index("nombre_de_archivo") + 1 if "nombre_de_archivo" in cab else None
+        for row in range(1, ws.max_row + 1):
+            cm = ws.cell(row, 1).comment
+            if cm and (cm.text or "").strip():
+                nombre = str(ws.cell(row, col_n).value or "") if col_n else ""
+                out.append((row, nombre, " ".join(cm.text.split())))
+    return out
+
+
+def descargar_plantilla_revisada(driver, etiqueta: str = "carga") -> Path | None:
+    """Solo lectura: baja el Excel con las observaciones del portal."""
+    try:
+        w = WebDriverWait(driver, 30)
+        p = click_y_esperar_descarga(driver, w, XP_DESCARGAR_REVISADA, glob_pat="*.xls*")
+        logger.error("[%s] Plantilla revisada (errores del portal): %s", etiqueta, p)
+        for fila, nombre, comentario in comentarios_plantilla_revisada(p, etiqueta):
+            logger.error("[%s] Fila %s (%s): %s", etiqueta, fila, nombre, comentario)
+        return p
+    except Exception as exc:
+        logger.warning("[%s] No se pudo descargar la plantilla revisada: %s", etiqueta, exc)
+        return None
+
+
+def esperar_resultado_validacion(
+    driver, *, timeout: float = 180, etiqueta: str = "carga", prefijo_shot: str = "carga"
+) -> None:
+    """Tras 'Validar Documentos': OK solo si 0 errores y botón Realizar habilitado.
+    Errores / 'Planilla no válida' / modal de error → screenshot, descarga la
+    plantilla revisada y lanza excepción (nunca se llega a 'Realizar')."""
+    t0 = time.time()
+    last = 0.0
+    while time.time() - t0 < timeout:
+        r = driver.execute_script(JS_RESULTADO_VALIDACION)
+        if r == "ok":
+            logger.info("[%s] Validación OK (%.0fs)", etiqueta, time.time() - t0)
+            return
+        if r:
+            screenshot(driver, f"{prefijo_shot}_validacion_error.png")
+            revisada = descargar_plantilla_revisada(driver, etiqueta)
+            raise RuntimeError(
+                f"[{etiqueta}] Validación de documentos falló: {r} | plantilla revisada: {revisada}"
+            )
+        if time.time() - last >= 5:
+            logger.info("[%s] Esperando resultado de validación… (%.0fs)", etiqueta, time.time() - t0)
+            last = time.time()
+        time.sleep(0.5)
+    screenshot(driver, f"{prefijo_shot}_validacion_timeout.png")
+    raise TimeoutError(f"Timeout {timeout:.0f}s esperando resultado de 'Validar Documentos'")
+
+
+JS_RESUMEN_CARGA = """
+const t = document.body.innerText || '';
+const m = t.match(/Documentos\\s+Agregados\\s*:\\s*(\\d+)/i);
+const vis = e => !!(e && e.offsetParent !== null);
+const modals = [...document.querySelectorAll('.modal,.swal2-popup,.bootbox,.alert,[role=alert]')]
+  .filter(vis).map(e => (e.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 300));
+return {agregados: m ? parseInt(m[1], 10) : null, modals: modals};
+"""
+
+
+def esperar_post_carga(
+    driver, *, etiqueta: str = "carga", prefijo_shot: str = "carga", timeout: float = 120
+) -> dict:
+    """
+    Tras el ÚNICO click en 'Realizar Carga Masiva'. El modal 'Enviando correo...
+    Documentos Agregados: N' nunca llega al 100% (bug del sitio): en cuanto aparece
+    se registra N, screenshot y se retorna éxito. No clickea ningún botón.
+    """
+    t0 = time.time()
+    resumen: dict = {}
+    while time.time() - t0 < timeout:
+        try:
+            resumen = driver.execute_script(JS_RESUMEN_CARGA) or {}
+        except Exception:
+            resumen = {}
+        modals = " ".join(resumen.get("modals") or [])
+        if resumen.get("agregados") is not None or re.search(r"enviando correo|documentos agregados", modals, re.I):
+            time.sleep(2)  # dejar que el contador avance un poco antes de capturar
+            try:
+                resumen = driver.execute_script(JS_RESUMEN_CARGA) or resumen
+            except Exception:
+                pass
+            screenshot(driver, f"{prefijo_shot}_post_carga.png")
+            resumen = dict(resumen, ok=True)
+            logger.info(
+                "[%s] Carga masiva enviada: Documentos Agregados=%s | %s (%.0fs)",
+                etiqueta, resumen.get("agregados"), resumen.get("modals"), time.time() - t0,
+            )
+            return resumen
+        time.sleep(1)
+    screenshot(driver, f"{prefijo_shot}_sin_progreso_post_carga.png")
+    logger.warning("[%s] No apareció 'Documentos Agregados' en %.0fs; revisar UI", etiqueta, timeout)
+    return dict(resumen, ok=False)
 
 
 def _norm(texto: str) -> str:

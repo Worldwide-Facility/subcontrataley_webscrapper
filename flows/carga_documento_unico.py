@@ -18,6 +18,9 @@ from datetime import date
 from pathlib import Path
 
 from browser import (
+    cargar_documentos_dropzone,
+    esperar_resultado_validacion,
+    esperar_post_carga,
     click_mutante,
     dry_run,
     enviar_archivos,
@@ -231,10 +234,10 @@ def ejecutar_carga_un_documento(driver, wait, cfg: FlujoPagoConfig) -> Path:
     screenshot(driver, f"{cfg.clave}_excel_enviado.png")
 
     logger.info("[%s] Subiendo %s documentos", cfg.clave, len(paths))
-    enviar_archivos(
-        driver, wait, "liquidaciones.zona_upload_liquidaciones", paths, multiples=True
+    cargar_documentos_dropzone(
+        driver, wait, "liquidaciones.zona_upload_liquidaciones", paths,
+        plantilla=plantilla, columna="nombre_de_archivo", etiqueta=cfg.clave,
     )
-    time.sleep(2)
     screenshot(driver, f"{cfg.clave}_pdfs.png")
 
     logger.info("[%s] Confirmar carga", cfg.clave)
@@ -242,7 +245,10 @@ def ejecutar_carga_un_documento(driver, wait, cfg: FlujoPagoConfig) -> Path:
         driver, wait, "liquidaciones.btn_confirmar_carga",
         "click 'Validar Documentos' (envía la carga a validación)",
     )
-    time.sleep(2)
+    if not dry_run():
+        esperar_resultado_validacion(
+            driver, timeout=180, etiqueta=cfg.clave, prefijo_shot=cfg.clave
+        )
     screenshot(driver, f"{cfg.clave}_confirmar.png")
 
     logger.info("[%s] Post-confirmar", cfg.clave)
@@ -252,6 +258,8 @@ def ejecutar_carga_un_documento(driver, wait, cfg: FlujoPagoConfig) -> Path:
     )
     time.sleep(2)
     screenshot(driver, f"{cfg.clave}_post_confirmar.png")
+    if not dry_run():
+        esperar_post_carga(driver, etiqueta=cfg.clave, prefijo_shot=cfg.clave, timeout=120)
 
     logger.info(
         "[%s] %s | excel=%s | pdfs=%s | %s",

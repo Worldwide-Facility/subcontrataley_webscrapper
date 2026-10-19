@@ -7,6 +7,9 @@ import time
 from pathlib import Path
 
 from browser import (
+    cargar_documentos_dropzone,
+    esperar_resultado_validacion,
+    esperar_post_carga,
     click_mutante,
     dry_run,
     enviar_archivos,
@@ -99,17 +102,17 @@ def ejecutar(driver, wait) -> Path:
     screenshot(driver, "liquidaciones_excel_enviado.png")
 
     logger.info("Subiendo %s liquidaciones", len(paths_liq))
-    enviar_archivos(
-        driver, wait, "liquidaciones.zona_upload_liquidaciones", paths_liq, multiples=True
+    cargar_documentos_dropzone(
+        driver, wait, "liquidaciones.zona_upload_liquidaciones", paths_liq,
+        plantilla=plantilla, columna="nombre_de_archivo", etiqueta=NOMBRE,
     )
-    time.sleep(2)
     screenshot(driver, "liquidaciones_pdfs_liq.png")
 
     logger.info("Subiendo %s transferencias", len(paths_tr))
-    enviar_archivos(
-        driver, wait, "liquidaciones.zona_upload_transferencias", paths_tr, multiples=True
+    cargar_documentos_dropzone(
+        driver, wait, "liquidaciones.zona_upload_transferencias", paths_tr,
+        plantilla=plantilla, columna="documento_asociado_1", etiqueta=NOMBRE,
     )
-    time.sleep(2)
     screenshot(driver, "liquidaciones_pdfs_tr.png")
 
     logger.info("Confirmando carga")
@@ -117,7 +120,10 @@ def ejecutar(driver, wait) -> Path:
         driver, wait, "liquidaciones.btn_confirmar_carga",
         "click 'Validar Documentos' (envía la carga a validación)",
     )
-    time.sleep(2)
+    if not dry_run():
+        esperar_resultado_validacion(
+            driver, timeout=180, etiqueta=NOMBRE, prefijo_shot="liquidaciones"
+        )
     screenshot(driver, "liquidaciones_despues_confirmar.png")
 
     logger.info("Click post-confirmar")
@@ -127,6 +133,8 @@ def ejecutar(driver, wait) -> Path:
     )
     time.sleep(2)
     screenshot(driver, "liquidaciones_despues_post_confirmar.png")
+    if not dry_run():
+        esperar_post_carga(driver, etiqueta=NOMBRE, prefijo_shot="liquidaciones", timeout=120)
 
     logger.info(
         "%s: %s | excel=%s | keep=%s | liq=%s | tr=%s | "

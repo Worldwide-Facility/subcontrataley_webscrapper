@@ -90,9 +90,8 @@ XPATHS = {
         "/html/body/div[6]/div[2]/div[2]/div[1]/div/div/div/div/div/div/div[5]/div[2]/button/span"
     ),
     # Alias libro de asistencia / misma pantalla post-carga masiva
-    "asistencias.btn_despues_carga_masiva": (
-        "/html/body/div[6]/div[2]/div[2]/div[1]/div/div/div/div/div/div/div[5]/div[2]/button/span"
-    ),
+    # Legacy eliminado: el XPath absoluto apuntaba a 'Realizar Carga Masiva'.
+    "asistencias.btn_despues_carga_masiva": None,
     # --- Listado trabajadores (menú finiquitos / personal) ---
     # Tras Carga Masiva (nav.paso_1).
     "trabajadores.paso_1": (
@@ -285,6 +284,14 @@ FALLBACKS: dict[str, list[str]] = {
     ],
     "asistencias.btn_realizar_carga_masiva": [
         "//button[@id='cmsd_btn_realizar_carga_masiva']",
+    ],
+    # Post-carga: NUNCA debe coincidir con 'Realizar Carga Masiva' (el XPath absoluto
+    # legacy apunta a ese mismo botón en la pantalla 2.3).
+    "asistencias.btn_despues_carga_masiva": [
+        "//div[contains(@class,'modal') and contains(@class,'in')]//button"
+        "[not(@id='cmsd_btn_realizar_carga_masiva')]"
+        "[not(contains(normalize-space(.),'Realizar Carga Masiva'))]"
+        "[contains(.,'Aceptar') or contains(.,'Continuar') or contains(.,'Finalizar')]",
     ],
     # --- Finiquitar trabajadores (listado) ---
     "trabajadores.paso_1": [
