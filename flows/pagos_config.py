@@ -12,9 +12,9 @@ class FlujoPagoConfig:
     # Los 4 usan el mismo PDF de cotizaciones Previred en GCS
     tipo_gcs: str = "Cotizaciones"
     layout_gcs: str = "yyyy_mm"  # .../Cotizaciones/2026/06/
-    # True: la plantilla del portal es POR FAENA (sin RUT). Se usa la plantilla de
-    # Liquidaciones como base (RUT→faena), se fusiona 1 PDF por faena y se rellena
-    # la plantilla propia (mismo esquema que Libro de Asistencia).
+    # True: la plantilla del portal es POR FAENA (sin RUT). La base RUT→faena es la
+    # planilla de Liquidaciones guardada para ese mes. Se fusiona 1 PDF por faena
+    # y se rellena la plantilla propia (mismo esquema que Libro de Asistencia).
     por_faena: bool = False
     # Etiqueta del PDF fusionado: {slug_faena}_{etiqueta}_{periodo}.pdf
     etiqueta_archivo: str = ""

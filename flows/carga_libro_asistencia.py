@@ -1,7 +1,7 @@
 """
 Flujo completo: Libro de Asistencia.
 
-1) Descarga Excel de Liquidaciones → RUT por faena
+1) Planilla de Liquidaciones del mes (guardada al cargarlas, o descarga si aún no existe) → RUT por faena
 2) Compila 1 PDF de asistencia por faena desde GCS
 3) Descarga plantilla Libro de Asistencia y la rellena
 4) Sube Excel + PDFs (espera fin de upload) → Validar → Carga Masiva → post
@@ -34,6 +34,7 @@ from flows.llegar_a_plantillas import (
 )
 from flows.plantilla_schema import GLOB_PLANTILLA
 from gcs_docs import periodo_gcs_texto
+from plantilla_liquidaciones_store import asegurar_plantilla_liquidaciones
 from rellenar_plantilla_asistencias import rellenar_plantilla_asistencias
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -71,17 +72,25 @@ def ejecutar(driver, wait) -> Path:
     logger.info("[%s] Periodo GCS: %s", NOMBRE, periodo_gcs)
 
     # --- 1. Excel liquidaciones (universo RUT/faena) ---
-    logger.info("[%s] Descargando plantilla de liquidaciones", NOMBRE)
-    periodo_ui = _elegir_tipo_y_periodo(driver, wait, TIPO_LIQUIDACIONES)
-    screenshot(driver, "asist_e2e_liq_tipo_periodo.png")
-    plantilla_liq = click_y_esperar_descarga(
-        driver,
-        wait,
-        xpk(driver, "liquidaciones.btn_descargar_plantilla"),
-        glob_pat=GLOB_PLANTILLA,
+    def _bajar_liquidaciones() -> Path:
+        logger.info("[%s] Descargando plantilla de liquidaciones", NOMBRE)
+        periodo_ui = _elegir_tipo_y_periodo(driver, wait, TIPO_LIQUIDACIONES)
+        screenshot(driver, "asist_e2e_liq_tipo_periodo.png")
+        bajada = click_y_esperar_descarga(
+            driver,
+            wait,
+            xpk(driver, "liquidaciones.btn_descargar_plantilla"),
+            glob_pat=GLOB_PLANTILLA,
+        )
+        screenshot(driver, "asist_e2e_liq_descargada.png")
+        logger.info("[%s] Excel liquidaciones: %s (UI=%s)", NOMBRE, bajada.name, periodo_ui)
+        return bajada
+
+    plantilla_liq = asegurar_plantilla_liquidaciones(
+        periodo_gcs,
+        DOWNLOAD_DIR / "plantillas_liquidaciones",
+        _bajar_liquidaciones,
     )
-    screenshot(driver, "asist_e2e_liq_descargada.png")
-    logger.info("[%s] Excel liquidaciones: %s (UI=%s)", NOMBRE, plantilla_liq.name, periodo_ui)
 
     # --- 2. Compilar PDFs por faena (offline GCS) ---
     logger.info("[%s] Compilando asistencias GCS por faena…", NOMBRE)

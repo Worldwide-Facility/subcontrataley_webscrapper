@@ -3,9 +3,9 @@ Motor compartido de pagos.
 
 - AFP / Isapre (cfg.por_faena=False): plantilla con 1 fila por RUT → 1 archivo por RUT.
 - Mutualidades / Cajas (cfg.por_faena=True): la plantilla del portal es POR FAENA.
-  Igual que Libro de Asistencia: se descarga la plantilla de Liquidaciones como base
-  (RUT→faena), se fusiona 1 PDF por faena con los PDFs de los RUT de esa faena y se
-  rellena la plantilla propia (columna nombre_de_archivo por fila de faena).
+  Igual que Libro de Asistencia: usa la planilla de Liquidaciones de ese mes
+  (la guardada al cargarla, o una descarga si aún no existe) como base RUT→faena,
+  fusiona 1 PDF por faena y rellena la plantilla propia.
 
 Luego: subir excel + PDFs → Validar Documentos → Realizar Carga Masiva.
 """
@@ -34,6 +34,7 @@ from flows.llegar_a_plantillas import llegar_a_cargar_plantillas
 from flows.pagos_config import FlujoPagoConfig, fuente_por_faena
 from flows.plantilla_schema import GLOB_PLANTILLA
 from compilar_asistencias import compilar_docs_por_faena
+from plantilla_liquidaciones_store import asegurar_plantilla_liquidaciones
 from gcs_docs import (
     descargar_docs,
     periodo_cotizaciones,
@@ -104,13 +105,27 @@ def _preparar_por_faena(driver, wait, cfg: FlujoPagoConfig) -> tuple[Path, list[
     ref, periodo_gcs = _periodo_cotizaciones(cfg)
     etiqueta = cfg.etiqueta_archivo or cfg.clave
 
-    # 1) Base: plantilla de Liquidaciones (universo RUT/faena)
-    periodo_ui = _elegir_tipo_y_periodo(
-        driver, wait, cfg.clave, TIPO_LIQUIDACIONES, referencia=ref
+    # 1) Base: planilla de Liquidaciones del periodo (RUT→faena)
+    def _bajar_liquidaciones() -> Path:
+        periodo_ui = _elegir_tipo_y_periodo(
+            driver, wait, cfg.clave, TIPO_LIQUIDACIONES, referencia=ref
+        )
+        screenshot(driver, f"{cfg.clave}_base_liq_tipo_periodo.png")
+        bajada = _descargar_plantilla(driver, wait)
+        logger.info(
+            "[%s] Base liquidaciones descargada: %s (UI=%s)",
+            cfg.clave,
+            bajada.name,
+            periodo_ui,
+        )
+        return bajada
+
+    plantilla_liq = asegurar_plantilla_liquidaciones(
+        periodo_gcs,
+        DOWNLOAD_DIR / "plantillas_liquidaciones",
+        _bajar_liquidaciones,
     )
-    screenshot(driver, f"{cfg.clave}_base_liq_tipo_periodo.png")
-    plantilla_liq = _descargar_plantilla(driver, wait)
-    logger.info("[%s] Base liquidaciones: %s (UI=%s)", cfg.clave, plantilla_liq.name, periodo_ui)
+    logger.info("[%s] Base liquidaciones: %s", cfg.clave, plantilla_liq.name)
 
     # 2) Fusionar PDFs GCS (tipo cfg.tipo_gcs) por faena, orden por RUT
     compilado = compilar_docs_por_faena(

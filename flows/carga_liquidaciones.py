@@ -22,6 +22,7 @@ from config import DOWNLOAD_DIR
 from flows.llegar_a_plantillas import llegar_a_cargar_plantillas
 from flows.plantilla_schema import GLOB_PLANTILLA
 from gcs_docs import descargar_docs, periodo_gcs_texto
+from plantilla_liquidaciones_store import guardar_plantilla_liquidaciones
 from rellenar_plantilla import rellenar_plantilla_liquidaciones
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,9 @@ def ejecutar(driver, wait) -> Path:
     screenshot(driver, "liquidaciones_despues_descarga.png")
 
     periodo_gcs = periodo_gcs_texto()
+    # El portal no vuelve a entregar esta planilla después de la carga.
+    # Se guarda el Excel original (RUT y faena) para el resto de ejecuciones del mes.
+    guardar_plantilla_liquidaciones(plantilla, periodo_gcs)
     staging = DOWNLOAD_DIR / "staging_liquidaciones" / periodo_gcs.replace(" ", "_")
     logger.info(
         "Rellenando plantilla desde GCS (UI='%s', GCS='%s')",
