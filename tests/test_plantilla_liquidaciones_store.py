@@ -1,6 +1,7 @@
 """La planilla de liquidaciones queda guardada y se reutiliza en el mismo periodo."""
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -27,6 +28,7 @@ class _Blob:
         self.bucket = _Bucket()
 
     def upload_from_filename(self, filename, content_type=None):
+        self.uploads.append(self.name)
         self.store[self.name] = Path(filename).read_bytes()
 
     def exists(self):
@@ -40,9 +42,12 @@ class _Bucket:
     def __init__(self):
         self.store: dict[str, bytes] = {}
         self.name = "test-bucket"
+        self.uploads: list[str] = []
 
     def blob(self, name):
-        return _Blob(self.store, name, self.name)
+        b = _Blob(self.store, name, self.name)
+        b.uploads = self.uploads
+        return b
 
 
 class TestPlantillaLiquidacionesStore(unittest.TestCase):
@@ -120,3 +125,60 @@ class TestPlantillaLiquidacionesStore(unittest.TestCase):
                 for hijo in dest.iterdir():
                     hijo.unlink()
                 dest.rmdir()
+
+
+class TestPrimeraDelMes(unittest.TestCase):
+    RUTA = ruta_gcs_plantilla_liquidaciones("octubre 2026")
+
+    def setUp(self):
+        self._env = os.environ.pop("PLANTILLA_LIQ_FORZAR", None)
+        self.origen = Path(self.id().replace(".", "_") + ".xlsx")
+        self.origen.write_bytes(b"nueva")
+
+    def tearDown(self):
+        self.origen.unlink(missing_ok=True)
+        os.environ.pop("PLANTILLA_LIQ_FORZAR", None)
+        if self._env is not None:
+            os.environ["PLANTILLA_LIQ_FORZAR"] = self._env
+
+    def test_no_existe_sube(self):
+        bucket = _Bucket()
+        guardar_plantilla_liquidaciones(self.origen, "octubre 2026", bucket=bucket)
+        self.assertEqual(bucket.uploads, [self.RUTA])
+        self.assertEqual(bucket.store[self.RUTA], b"nueva")
+
+    def test_existe_no_sube(self):
+        bucket = _Bucket()
+        bucket.store[self.RUTA] = b"primera"
+        with self.assertLogs("plantilla_liquidaciones_store", "INFO") as cm:
+            ruta = guardar_plantilla_liquidaciones(self.origen, "octubre 2026", bucket=bucket)
+        self.assertEqual(ruta, self.RUTA)
+        self.assertEqual(bucket.uploads, [])
+        self.assertEqual(bucket.store[self.RUTA], b"primera")
+        self.assertIn("NO se sobrescribe", "\n".join(cm.output))
+
+    def test_forzado_sube(self):
+        os.environ["PLANTILLA_LIQ_FORZAR"] = "1"
+        bucket = _Bucket()
+        bucket.store[self.RUTA] = b"primera"
+        guardar_plantilla_liquidaciones(self.origen, "octubre 2026", bucket=bucket)
+        self.assertEqual(bucket.uploads, [self.RUTA])
+        self.assertEqual(bucket.store[self.RUTA], b"nueva")
+
+    def test_cuenta_filas_en_log(self):
+        from openpyxl import Workbook
+
+        def xlsx(path, n):
+            wb = Workbook()
+            for i in range(n):
+                wb.active.append([f"rut{i}", "faena"])
+            wb.save(str(path))
+
+        bucket = _Bucket()
+        xlsx(self.origen, 3)
+        guardar_plantilla_liquidaciones(self.origen, "octubre 2026", bucket=bucket)
+        xlsx(self.origen, 5)
+        with self.assertLogs("plantilla_liquidaciones_store", "INFO") as cm:
+            guardar_plantilla_liquidaciones(self.origen, "octubre 2026", bucket=bucket)
+        self.assertIn("filas guardada=3, nueva=5", "\n".join(cm.output))
+        self.assertEqual(len(bucket.uploads), 1)

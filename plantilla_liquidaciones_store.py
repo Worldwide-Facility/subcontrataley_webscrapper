@@ -8,7 +8,9 @@ ejecuciones de ese mes lo reutilizan.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import tempfile
 import unicodedata
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +21,39 @@ logger = logging.getLogger(__name__)
 
 PREFIJO_GCS = "Subcontrataley/plantillas_liquidaciones"
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+ENV_FORZAR = "PLANTILLA_LIQ_FORZAR"
+
+
+def _forzar_sobrescritura() -> bool:
+    return os.environ.get(ENV_FORZAR, "").strip().lower() in ("1", "true", "si", "sí", "yes")
+
+
+def _contar_filas(path: Path) -> int | None:
+    """Filas con datos de la primera hoja (None si no se puede leer)."""
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(str(path), read_only=True, data_only=True)
+        try:
+            ws = wb.worksheets[0]
+            return sum(
+                1 for fila in ws.iter_rows(values_only=True)
+                if any(v not in (None, "") for v in fila)
+            )
+        finally:
+            wb.close()
+    except Exception:
+        return None
+
+
+def _filas_guardadas(blob) -> int | None:
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "guardada.xlsx"
+            blob.download_to_filename(str(dest))
+            return _contar_filas(dest)
+    except Exception:
+        return None
 
 
 def clave_periodo(periodo: str) -> str:
@@ -51,9 +86,39 @@ def guardar_plantilla_liquidaciones(
     bucket=None,
     bucket_name: str | None = None,
 ) -> str:
-    """Sube el Excel original. Hay que llamarla antes de rellenar o borrar filas."""
+    """
+    Sube el Excel original. Hay que llamarla antes de rellenar o borrar filas.
+
+    Solo se conserva la PRIMERA planilla guardada del mes: si ya existe una
+    para el periodo no se sobrescribe (salvo PLANTILLA_LIQ_FORZAR=1).
+    Devuelve la ruta GCS en ambos casos.
+    """
     ruta = ruta_gcs_plantilla_liquidaciones(periodo)
     blob = _bucket(bucket, bucket_name).blob(ruta)
+    forzar = _forzar_sobrescritura()
+    if blob.exists():
+        filas_nueva = _contar_filas(Path(origen))
+        filas_guardada = _filas_guardadas(blob)
+        if not forzar:
+            logger.info(
+                "Ya existe planilla de liquidaciones para %s (gs://.../%s); se conserva "
+                "la primera del mes y NO se sobrescribe (filas guardada=%s, nueva=%s). "
+                "Use %s=1 para forzar.",
+                periodo,
+                ruta,
+                filas_guardada,
+                filas_nueva,
+                ENV_FORZAR,
+            )
+            return ruta
+        logger.warning(
+            "%s activo: se sobrescribe la planilla guardada de %s "
+            "(filas guardada=%s, nueva=%s)",
+            ENV_FORZAR,
+            periodo,
+            filas_guardada,
+            filas_nueva,
+        )
     blob.upload_from_filename(str(origen), content_type=_XLSX)
     logger.info(
         "Planilla de liquidaciones guardada para %s → gs://%s/%s",

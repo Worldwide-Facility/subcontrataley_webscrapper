@@ -66,6 +66,8 @@ def ejecutar(driver, wait) -> Path:
     periodo_gcs = periodo_gcs_texto()
     # El portal no vuelve a entregar esta planilla después de la carga.
     # Se guarda el Excel original (RUT y faena) para el resto de ejecuciones del mes.
+    # Solo se guarda la primera del mes; si ya existe no se sobrescribe
+    # (PLANTILLA_LIQ_FORZAR=1 para forzar). Esta carga usa igual su planilla recién bajada.
     guardar_plantilla_liquidaciones(plantilla, periodo_gcs)
     staging = DOWNLOAD_DIR / "staging_liquidaciones" / periodo_gcs.replace(" ", "_")
     logger.info(
