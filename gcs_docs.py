@@ -1,14 +1,17 @@
 """Cliente GCS: buscar documentos personales por RUT + periodo (Tres raíces).
 
 Convención bucket `worldwide-documentos-instalaciones`:
-  Trabajadores/{rut}/{Tipo}/{periodo|YYYY/MM}/archivo.pdf   ← canónico (este scraper)
+  Trabajadores/{rut}/{Tipo}/{periodo|YYYY/MM}/archivo.pdf   ← mensual
+  Trabajadores/{rut}/{Tipo}/archivo.pdf                     ← vigente (sin mes)
   Instalaciones/{Industry|Security}/{cecos}/{Tipo}/...      ← faena (no usa SCL)
   Documentos_Generales/{carpeta}/...                        ← globales (no usa SCL)
 
 Tipos que consume Subcontrataley (todos personales):
   Liquidacion, Transferencia, Asistencia, Cotizaciones
+  y los documentos vigentes de trabajador (ver TIPOS_PERSONALES_SCL).
 
-Lectura dual durante migración: primero `Trabajadores/`, luego globs legacy.
+Lectura dual durante migración (layouts mensuales): primero `Trabajadores/`,
+luego globs legacy. El layout `vigente` solo lee la carpeta directa del RUT.
 """
 
 from __future__ import annotations
@@ -36,10 +39,37 @@ TIPOS_PERSONALES_SCL = frozenset(
         "Transferencia",
         "Asistencia",
         "Cotizaciones",
+        "Contrato",
+        "CapacitacionPrevencion",
+        "CapacitacionUsoEPP",
+        "CertificadoOS10",
+        "CertificadoAntecedentes",
+        "CedulaIdentidad",
+        "EntregaEPP",
+        "GuiaPracticaSeguridad",
+        "RecepcionReglamentoContratistas",
+        "RegistroDifusionReglamento",
+        "SeguroVida",
+        "TomaConocimientoIPER",
+        "TomaConocimientoProcedimiento",
+        "TomaConocimientoPrograma",
+        "TomaConocimientoRiesgos",
     }
 )
 
 _RUT_CARPETA_RE = re.compile(r"^(\d{7,8})(?:-[\dkK])?$")
+
+
+def es_pdf_vigente(ruta: str, tipo: str) -> bool:
+    """True si la ruta es Trabajadores/{rut}/{tipo}/{archivo}.pdf (cuatro segmentos)."""
+    partes = [p for p in str(ruta).strip("/").split("/") if p]
+    if len(partes) != 4:
+        return False
+    if partes[0] != RAIZ_TRABAJADORES or partes[2] != tipo:
+        return False
+    if not partes[3].lower().endswith(".pdf"):
+        return False
+    return _RUT_CARPETA_RE.match(partes[1].strip()) is not None
 
 
 @dataclass
@@ -178,8 +208,12 @@ def _globs_periodo(
     Lista de (glob, etiqueta) en orden de preferencia.
     1) Tres raíces Trabajadores/
     2) Legacy **/{Tipo}/... (cecos o Industry/Security/cecos)
+
+    layout vigente: solo Trabajadores/{rut}/{tipo}/{archivo}.pdf, sin legacy.
     """
     out: list[tuple[str, str]] = []
+    if layout == "vigente":
+        return [(f"{RAIZ_TRABAJADORES}/**/{tipo}/*.pdf", "tres_raices")]
     if layout == "yyyy_mm":
         assert anio and mes
         mes_alt = str(int(mes))
@@ -219,6 +253,8 @@ def _needles_periodo(
     mes: str | None,
 ) -> list[str]:
     """Substrings para fallback por prefix (sin listar todo el bucket)."""
+    if layout == "vigente":
+        return [f"/{tipo}/"]
     if layout == "yyyy_mm":
         assert anio and mes
         mes_alt = str(int(mes))
@@ -244,8 +280,9 @@ def listar_docs_periodo(
     layout:
       - mes_anio: {Tipo}/{periodo}/*.pdf  (ej. Liquidacion/junio 2026)
       - yyyy_mm:  {Tipo}/{anio}/{mes}/*.pdf  (ej. Cotizaciones/2026/06)
+      - vigente:  Trabajadores/{rut}/{Tipo}/{archivo}.pdf  (sin mes ni legacy)
 
-    Preferencia Tres raíces (`Trabajadores/...`); fallback legacy.
+    Preferencia Tres raíces (`Trabajadores/...`); fallback legacy en layouts mensuales.
     """
     bucket_name = bucket_name or GCS_BUCKET_NAME
     client = _cliente()
@@ -268,6 +305,8 @@ def listar_docs_periodo(
 
     def _add_blob(blob_name: str) -> None:
         if blob_name.endswith("/") or not blob_name.lower().endswith(".pdf"):
+            return
+        if layout == "vigente" and not es_pdf_vigente(blob_name, tipo):
             return
         if not any(n in blob_name for n in needles):
             return
@@ -351,6 +390,9 @@ def buscar_docs_tipo(
     referencia: date | None = None,
 ) -> tuple[dict[str, DocGCS], str]:
     """Índice RUT → doc para un tipo GCS."""
+    if layout == "vigente":
+        docs = listar_docs_periodo(tipo_gcs, "vigente", layout="vigente")
+        return indice_por_rut(docs), "vigente"
     if layout == "yyyy_mm":
         texto, anio, mes = periodo_gcs_yyyy_mm(referencia)
         docs = listar_docs_periodo(

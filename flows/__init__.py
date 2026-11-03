@@ -30,11 +30,12 @@ def _flujos() -> dict[str, tuple[str, Callable]]:
     from flows.descargar_listado_trabajadores import (
         ejecutar as ejecutar_listado_trabajadores,
     )
+    from flows.documentos_trabajador import DOCUMENTOS_TRABAJADOR, ejecutar_documento
     from flows.pipeline_ingreso_trabajadores import (
         ejecutar as ejecutar_ingreso_e2e,
     )
 
-    return {
+    flujos = {
         "liquidaciones": ("Liquidaciones de Sueldo", ejecutar_liquidaciones),
         "libro_asistencia": ("Libro de Asistencia", ejecutar_libro_asistencia),
         "pagos_afp_afc": ("Pagos AFP y AFC", ejecutar_pagos_afp_afc),
@@ -57,6 +58,9 @@ def _flujos() -> dict[str, tuple[str, Callable]]:
             ejecutar_ingreso_e2e,
         ),
     }
+    for cfg in DOCUMENTOS_TRABAJADOR:
+        flujos[cfg.clave] = (cfg.nombre_ui, ejecutar_documento(cfg))
+    return flujos
 
 
 class _FlujosProxy(dict):

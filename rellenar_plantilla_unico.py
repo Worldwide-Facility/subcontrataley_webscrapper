@@ -144,6 +144,11 @@ def rellenar_plantilla_un_documento(
             res.ruts_eliminados[:15],
         )
     if res.filas == 0:
+        if layout == "vigente":
+            raise ValueError(
+                f"Ningún RUT tiene '{tipo_gcs}' vigente en GCS "
+                f"(Trabajadores/{{rut}}/{tipo_gcs}/)."
+            )
         raise ValueError(
             f"Ningún RUT tiene '{tipo_gcs}' en GCS para periodo '{periodo}'."
         )

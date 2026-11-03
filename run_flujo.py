@@ -7,6 +7,7 @@ Uso:
   python run_flujo.py listado_trabajadores
   python run_flujo.py pagos_afp_afc
   python run_flujo.py pagos_isapre_fonasa
+  python run_flujo.py cedulas_identidad
   python run_flujo.py --list
 """
 
@@ -41,7 +42,7 @@ def main() -> None:
     if args.list or not args.flujo:
         print("Flujos disponibles:")
         for key, (nombre, _) in sorted(FLUJOS_CARGA.items()):
-            print(f"  {key:22} → {nombre}")
+            print(f"  {key:36} → {nombre}")
         if not args.flujo:
             parser.error("Indica un flujo, ej: python run_flujo.py liquidaciones")
         return
