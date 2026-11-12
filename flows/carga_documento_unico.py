@@ -33,6 +33,7 @@ from browser import (
     seleccionar_por_texto,
 )
 from config import COTIZACIONES_DIA_DISPONIBLE, COTIZACIONES_PERIODO, DOWNLOAD_DIR
+from errores_operativos import exigir_ok_post_carga
 from flows.llegar_a_plantillas import llegar_a_cargar_plantillas
 from flows.pagos_config import FlujoPagoConfig, fuente_por_faena
 from flows.plantilla_schema import GLOB_PLANTILLA
@@ -259,7 +260,12 @@ def ejecutar_carga_un_documento(driver, wait, cfg: FlujoPagoConfig) -> Path:
     time.sleep(2)
     screenshot(driver, f"{cfg.clave}_post_confirmar.png")
     if not dry_run():
-        esperar_post_carga(driver, etiqueta=cfg.clave, prefijo_shot=cfg.clave, timeout=120)
+        exigir_ok_post_carga(
+            esperar_post_carga(
+                driver, etiqueta=cfg.clave, prefijo_shot=cfg.clave, timeout=120
+            ),
+            etiqueta=cfg.clave,
+        )
 
     logger.info(
         "[%s] %s | excel=%s | pdfs=%s | %s",

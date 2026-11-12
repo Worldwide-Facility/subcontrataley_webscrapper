@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import time
 
 from browser import iniciar_navegador, screenshot
 from config import DRY_RUN
+from errores_operativos import es_error_operativo
 from flows import FLUJOS_CARGA
 
 logging.basicConfig(
@@ -28,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Flujos Subcontrataley")
     parser.add_argument(
         "flujo",
@@ -45,7 +47,7 @@ def main() -> None:
             print(f"  {key:36} → {nombre}")
         if not args.flujo:
             parser.error("Indica un flujo, ej: python run_flujo.py liquidaciones")
-        return
+        return 0
 
     nombre, ejecutar = FLUJOS_CARGA[args.flujo]
     logger.info("Iniciando flujo: %s (%s) DRY_RUN=%s", nombre, args.flujo, DRY_RUN)
@@ -55,8 +57,12 @@ def main() -> None:
         ejecutar(driver, wait)
         logger.info("Flujo '%s' terminó. Navegador abierto 60s.", nombre)
         time.sleep(60)
-    except Exception:
+        return 0
+    except Exception as exc:
         screenshot(driver, f"error_{args.flujo}.png")
+        if es_error_operativo(exc):
+            logger.error("%s", exc)
+            return 1
         raise
     finally:
         driver.quit()
@@ -64,4 +70,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
