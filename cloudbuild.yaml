@@ -206,6 +206,36 @@ steps:
         deploy subcontrataley-pagos-isapre-fonasa pagos_isapre_fonasa_cloudrun.py
         deploy subcontrataley-pagos-mutualidades pagos_mutualidades_cloudrun.py
         deploy subcontrataley-pagos-cajas pagos_cajas_compensacion_cloudrun.py
+
+        # Documentos vigentes del trabajador (15 tipos; timeout 3h)
+        JOB="subcontrataley-documentos-trabajador"
+        ARGS="documentos_trabajador_cloudrun.py"
+        echo "🔧 $${JOB} → $${ARGS} (timeout 10800s)"
+        if gcloud run jobs describe "$${JOB}" --region "$${REGION}" >/dev/null 2>&1; then
+          gcloud run jobs update "$${JOB}" \
+            --image="$${IMAGE}" \
+            --region="$${REGION}" \
+            --update-env-vars="$${ENV_VARS}" \
+            --service-account="$${SA}" \
+            --task-timeout=10800 \
+            --memory=4Gi \
+            --cpu=2 \
+            --max-retries=1 \
+            --command=python \
+            --args="$${ARGS}"
+        else
+          gcloud run jobs create "$${JOB}" \
+            --image="$${IMAGE}" \
+            --region="$${REGION}" \
+            --set-env-vars="$${ENV_VARS}" \
+            --service-account="$${SA}" \
+            --task-timeout=10800 \
+            --memory=4Gi \
+            --cpu=2 \
+            --max-retries=1 \
+            --command=python \
+            --args="$${ARGS}"
+        fi
     waitFor: [push-sha, push-latest]
 
 images:

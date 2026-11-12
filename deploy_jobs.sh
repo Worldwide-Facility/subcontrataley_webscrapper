@@ -66,6 +66,36 @@ deploy_job "subcontrataley-pagos-isapre-fonasa" "pagos_isapre_fonasa_cloudrun.py
 deploy_job "subcontrataley-pagos-mutualidades" "pagos_mutualidades_cloudrun.py"
 deploy_job "subcontrataley-pagos-cajas" "pagos_cajas_compensacion_cloudrun.py"
 
+# 15 docs vigentes: timeout más largo (mismo helper, timeout distinto)
+echo "🔧 Desplegando job: subcontrataley-documentos-trabajador → documentos_trabajador_cloudrun.py"
+if gcloud run jobs update "subcontrataley-documentos-trabajador" \
+    --image="${IMAGE}" \
+    --region="${REGION}" \
+    --update-env-vars="${ENV_BASE}" \
+    --service-account="${SERVICE_ACCOUNT}" \
+    --task-timeout=10800 \
+    --memory=4Gi \
+    --cpu=2 \
+    --max-retries=1 \
+    --command=python \
+    --args="documentos_trabajador_cloudrun.py" 2>/dev/null; then
+    echo "✅ Job subcontrataley-documentos-trabajador actualizado"
+else
+    echo "📝 Creando nuevo job subcontrataley-documentos-trabajador..."
+    gcloud run jobs create "subcontrataley-documentos-trabajador" \
+        --image="${IMAGE}" \
+        --region="${REGION}" \
+        --set-env-vars="${ENV_BASE}" \
+        --service-account="${SERVICE_ACCOUNT}" \
+        --task-timeout=10800 \
+        --memory=4Gi \
+        --cpu=2 \
+        --max-retries=1 \
+        --command=python \
+        --args="documentos_trabajador_cloudrun.py"
+    echo "✅ Job subcontrataley-documentos-trabajador creado"
+fi
+
 echo "✅ Todos los jobs desplegados."
 echo ""
 echo "Secrets (una vez, no los pisa el update base):"
@@ -73,7 +103,10 @@ echo "  gcloud run jobs update subcontrataley-libro-asistencia --region=${REGION
 echo "    --update-env-vars=\"SUBCONTRATALEY_USERNAME=...,SUBCONTRATALEY_PASSWORD=...\""
 echo "  gcloud run jobs update subcontrataley-ingreso-trabajadores --region=${REGION} \\"
 echo "    --update-env-vars=\"SUBCONTRATALEY_USERNAME=...,SUBCONTRATALEY_PASSWORD=...,TOKEN_CR_CONTRATOS=...\""
+echo "  gcloud run jobs update subcontrataley-documentos-trabajador --region=${REGION} \\"
+echo "    --update-env-vars=\"SUBCONTRATALEY_USERNAME=...,SUBCONTRATALEY_PASSWORD=...,DRY_RUN=true\""
 echo ""
 echo "Ejecutar:"
 echo "  gcloud run jobs execute subcontrataley-libro-asistencia --region=${REGION}"
 echo "  gcloud run jobs execute subcontrataley-ingreso-trabajadores --region=${REGION}"
+echo "  gcloud run jobs execute subcontrataley-documentos-trabajador --region=${REGION}"

@@ -33,6 +33,12 @@ Misma forma que `cargas_documentos_instalaciones_webscrapper`:
 |-----|--------|
 | `subcontrataley-libro-asistencia` | `libro_asistencia_cloudrun.py` |
 | `subcontrataley-ingreso-trabajadores` | `ingreso_trabajadores_cloudrun.py` |
+| `subcontrataley-liquidaciones` | `liquidaciones_cloudrun.py` |
+| `subcontrataley-pagos-afp-afc` | `pagos_afp_afc_cloudrun.py` |
+| `subcontrataley-pagos-isapre-fonasa` | `pagos_isapre_fonasa_cloudrun.py` |
+| `subcontrataley-pagos-mutualidades` | `pagos_mutualidades_cloudrun.py` |
+| `subcontrataley-pagos-cajas` | `pagos_cajas_compensacion_cloudrun.py` |
+| `subcontrataley-documentos-trabajador` | `documentos_trabajador_cloudrun.py` |
 
 ### Opción 1: Cloud Build desde Git (recomendado)
 
@@ -77,15 +83,25 @@ gcloud run jobs update subcontrataley-ingreso-trabajadores --region=us-east1 \
 ```bash
 gcloud run jobs execute subcontrataley-libro-asistencia --region=us-east1
 gcloud run jobs execute subcontrataley-ingreso-trabajadores --region=us-east1
+gcloud run jobs execute subcontrataley-documentos-trabajador --region=us-east1
 ```
+
+Documentos vigentes del trabajador: catálogo de 15 tipos + carga masiva compartida.
+**Origen de PDFs pendiente** (Diego); hoy se elige proveedor provisional:
+`DOCUMENTOS_TRABAJADOR_FUENTE=local|gcs` (+ `DOCUMENTOS_TRABAJADOR_LOCAL_ROOT` si local).
+Filtro opcional: `DOCUMENTOS_TRABAJADOR_CLAVES=cedulas_identidad,contratos_trabajo`.
+Probar sin cargar: `DRY_RUN=true`.
 
 ### Local (simula contenedor)
 
 ```bash
 HEADLESS=true python libro_asistencia_cloudrun.py
 HEADLESS=true python ingreso_trabajadores_cloudrun.py
+DRY_RUN=true HEADLESS=true python documentos_trabajador_cloudrun.py
 # o pipeline ingreso vía CLI:
 python run_flujo.py ingreso_trabajadores_e2e
+# un documento vigente:
+python run_flujo.py cedulas_identidad
 ```
 
 **Permisos SA** (`webscrapper@worldwide-470917.iam.gserviceaccount.com`):
@@ -107,6 +123,7 @@ plantilla vacía fresca → rellenar → validar → carga masiva.
 | `listado_trabajadores` | Listado finiquitables |
 | `ingreso_trabajadores` | Solo subir plantilla ya rellena |
 | `ingreso_trabajadores_e2e` | Pipeline completo de ingreso |
+| `cedulas_identidad` (y 14 más) | Docs vigentes trabajador (carga masiva) |
 
 ```bash
 python run_flujo.py --list
@@ -142,6 +159,10 @@ Trabajadores/{rut}/Transferencia/{mes año}/*.pdf
 Trabajadores/{rut}/Asistencia/{mes año}/*.pdf
 Trabajadores/{rut}/Cotizaciones/{YYYY}/{MM}/*.pdf
 ```
+
+Documentos vigentes del trabajador: el layout de origen **aún no está cerrado**;
+el flujo lee vía proveedor configurable (`flows/proveedor_documentos_trabajador.py`).
+
 
 Durante la migración se mantiene dual-read: primero `Trabajadores/`, luego globs
 legacy (`{cecos}/{Tipo}/...` o `Industry|Security/{cecos}/...`). Si un RUT tiene
