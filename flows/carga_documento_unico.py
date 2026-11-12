@@ -18,16 +18,21 @@ from datetime import date
 from pathlib import Path
 
 from browser import (
+    cargar_documentos_dropzone,
+    esperar_resultado_validacion,
+    esperar_post_carga,
+    click_mutante,
+    dry_run,
+    enviar_archivos,
+    xpk,
     click_xpath,
     click_y_esperar_descarga,
     esperar_select_cargado,
     screenshot,
     seleccionar_periodo_mes_anterior,
     seleccionar_por_texto,
-    xpk,
 )
 from config import COTIZACIONES_DIA_DISPONIBLE, COTIZACIONES_PERIODO, DOWNLOAD_DIR
-from flows.carga_masiva_compartida import ejecutar_carga_masiva_excel_y_pdfs
 from flows.llegar_a_plantillas import llegar_a_cargar_plantillas
 from flows.pagos_config import FlujoPagoConfig, fuente_por_faena
 from flows.plantilla_schema import GLOB_PLANTILLA
@@ -213,11 +218,55 @@ def ejecutar_carga_un_documento(driver, wait, cfg: FlujoPagoConfig) -> Path:
         paths = descargar_docs(resultado.docs, staging)
         resumen = f"keep={resultado.filas} | elim={resultado.eliminadas}"
 
-    return ejecutar_carga_masiva_excel_y_pdfs(
-        driver,
-        wait,
-        etiqueta=cfg.clave,
-        plantilla=plantilla,
-        paths=paths,
-        resumen_prep=resumen,
+    logger.info("[%s] Ir a pantalla de carga", cfg.clave)
+    click_xpath(driver, wait, xpk(driver, "liquidaciones.ir_a_cargar"))
+    time.sleep(2)
+    screenshot(driver, f"{cfg.clave}_pantalla_carga.png")
+
+    logger.info("[%s] Subiendo Excel: %s", cfg.clave, plantilla.name)
+    enviar_archivos(driver, wait, "liquidaciones.input_excel", [plantilla])
+    time.sleep(1)
+    click_mutante(
+        driver, wait, "liquidaciones.btn_enviar_excel",
+        "click 'Cargar Excel' (sube la plantilla al portal)",
     )
+    time.sleep(2)
+    screenshot(driver, f"{cfg.clave}_excel_enviado.png")
+
+    logger.info("[%s] Subiendo %s documentos", cfg.clave, len(paths))
+    cargar_documentos_dropzone(
+        driver, wait, "liquidaciones.zona_upload_liquidaciones", paths,
+        plantilla=plantilla, columna="nombre_de_archivo", etiqueta=cfg.clave,
+    )
+    screenshot(driver, f"{cfg.clave}_pdfs.png")
+
+    logger.info("[%s] Confirmar carga", cfg.clave)
+    click_mutante(
+        driver, wait, "liquidaciones.btn_confirmar_carga",
+        "click 'Validar Documentos' (envía la carga a validación)",
+    )
+    if not dry_run():
+        esperar_resultado_validacion(
+            driver, timeout=180, etiqueta=cfg.clave, prefijo_shot=cfg.clave
+        )
+    screenshot(driver, f"{cfg.clave}_confirmar.png")
+
+    logger.info("[%s] Post-confirmar", cfg.clave)
+    click_mutante(
+        driver, wait, "liquidaciones.btn_post_confirmar",
+        "click 'Realizar Carga Masiva' (carga definitiva; #cmsd_btn_realizar_carga_masiva)",
+    )
+    time.sleep(2)
+    screenshot(driver, f"{cfg.clave}_post_confirmar.png")
+    if not dry_run():
+        esperar_post_carga(driver, etiqueta=cfg.clave, prefijo_shot=cfg.clave, timeout=120)
+
+    logger.info(
+        "[%s] %s | excel=%s | pdfs=%s | %s",
+        cfg.clave,
+        "DRY_RUN: carga NO enviada" if dry_run() else "OK",
+        plantilla.name,
+        len(paths),
+        resumen,
+    )
+    return plantilla

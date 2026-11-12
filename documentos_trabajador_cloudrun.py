@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Entry point Cloud Run Job: documentos vigentes del trabajador (carga masiva).
+"""Entry point Cloud Run Job: documentos vigentes del trabajador (nivel PERSONA).
 
-Por defecto recorre los 15 tipos del catálogo. Filtrar con
+Carga por RUT en la sección de documentos del trabajador (NO plantillas faena).
+Por defecto recorre los 15 tipos. Filtrar con
 DOCUMENTOS_TRABAJADOR_CLAVES=clave1,clave2 (CSV de claves).
 """
 
@@ -60,10 +61,10 @@ def main() -> int:
         for cfg in docs:
             logger.info("--- Inicio %s (%s) ---", cfg.clave, cfg.nombre_ui)
             try:
-                plantilla = ejecutar_carga_documento_trabajador(
+                n = ejecutar_carga_documento_trabajador(
                     driver, wait, cfg, proveedor=proveedor
                 )
-                logger.info("OK %s | excel=%s", cfg.clave, plantilla)
+                logger.info("OK %s | ruts=%s | nivel=persona", cfg.clave, n)
             except Exception:
                 logger.error(
                     "Fallo documento %s:\n%s", cfg.clave, traceback.format_exc()

@@ -30,8 +30,6 @@ class ResultadoRellenoUnico:
     eliminadas: int = 0
     ruts_eliminados: list[str] = field(default_factory=list)
     docs: list[DocGCS] = field(default_factory=list)
-    # Referencias del proveedor (documentos trabajador); independiente de DocGCS
-    archivos: list = field(default_factory=list)
 
 
 def _mapa_columnas(ws: Worksheet) -> dict[str, int]:
@@ -53,19 +51,23 @@ def _col(mapa: dict[str, int], *nombres: str) -> int:
     raise KeyError(f"No encontré columna {nombres} en encabezados {list(mapa)}")
 
 
-def _rellenar_con_indice(
+def rellenar_plantilla_un_documento(
     plantilla: Path,
     *,
-    tipo: str,
-    periodo_etiqueta: str,
-    docs_idx: dict,
+    tipo_gcs: str,
+    layout: str = "yyyy_mm",
+    periodo_gcs: str | None = None,
     guardar_como: Path | None = None,
-    vacio_msg: str | None = None,
+    referencia: date | None = None,
 ) -> ResultadoRellenoUnico:
     """
-    Núcleo compartido: escribe nombre_de_archivo desde un índice RUT→obj.nombre.
-    `docs_idx` valores deben exponer `.nombre` (DocGCS o ArchivoDocumento).
+    Escribe nombre del PDF en 'nombre_de_archivo'.
+    Solo deja filas con documento en GCS; borra el resto.
+    No toca columnas de RUT/Nombre ni inventa documento_asociado_*.
     """
+    docs_idx, periodo = buscar_docs_tipo(
+        tipo_gcs, periodo=periodo_gcs, layout=layout, referencia=referencia
+    )
     wb = load_workbook(plantilla)
     if HOJA_DOCUMENTOS not in wb.sheetnames:
         raise ValueError(f"No existe hoja '{HOJA_DOCUMENTOS}' en {plantilla}")
@@ -73,6 +75,7 @@ def _rellenar_con_indice(
     cols = _mapa_columnas(ws)
     col_archivo = _col(cols, "nombre_de_archivo")
     col_rut = _col(cols, "rut", "RUT")
+    # opcionales: limpiar asociados si existen (plantilla estilo liquidaciones)
     cols_asociados = [
         cols[k]
         for k in cols
@@ -87,9 +90,9 @@ def _rellenar_con_indice(
         list(cols.keys()),
     )
 
-    res = ResultadoRellenoUnico(plantilla=plantilla, periodo_gcs=periodo_etiqueta)
+    res = ResultadoRellenoUnico(plantilla=plantilla, periodo_gcs=periodo)
     filas_a_borrar: list[int] = []
-    a_mantener: list[tuple[int, object]] = []
+    a_mantener: list[tuple[int, DocGCS]] = []
 
     for row in range(2, ws.max_row + 1):
         rut_raw = ws.cell(row, col_rut).value
@@ -108,16 +111,12 @@ def _rellenar_con_indice(
 
     vistos: set[str] = set()
     for row, doc in a_mantener:
-        nombre = doc.nombre
-        ws.cell(row, col_archivo, nombre)
+        ws.cell(row, col_archivo, doc.nombre)
         for col in cols_asociados:
             ws.cell(row, col, "")
-        if nombre not in vistos:
-            if isinstance(doc, DocGCS):
-                res.docs.append(doc)
-            else:
-                res.archivos.append(doc)
-            vistos.add(nombre)
+        if doc.nombre not in vistos:
+            res.docs.append(doc)
+            vistos.add(doc.nombre)
 
     for row in sorted(filas_a_borrar, reverse=True):
         ws.delete_rows(row, 1)
@@ -131,8 +130,8 @@ def _rellenar_con_indice(
 
     logger.info(
         "Plantilla 1-doc tipo=%s periodo=%s | orig=%s keep=%s elim=%s → %s",
-        tipo,
-        periodo_etiqueta,
+        tipo_gcs,
+        periodo,
         res.filas_originales,
         res.filas,
         res.eliminadas,
@@ -145,64 +144,12 @@ def _rellenar_con_indice(
             res.ruts_eliminados[:15],
         )
     if res.filas == 0:
+        if layout == "vigente":
+            raise ValueError(
+                f"Ningún RUT tiene '{tipo_gcs}' vigente en GCS "
+                f"(Trabajadores/{{rut}}/{tipo_gcs}/)."
+            )
         raise ValueError(
-            vacio_msg
-            or f"Ningún RUT tiene '{tipo}' disponible (periodo '{periodo_etiqueta}')."
+            f"Ningún RUT tiene '{tipo_gcs}' en GCS para periodo '{periodo}'."
         )
     return res
-
-
-def rellenar_plantilla_desde_archivos(
-    plantilla: Path,
-    *,
-    tipo: str,
-    docs_idx: dict,
-    etiqueta_origen: str = "proveedor",
-    guardar_como: Path | None = None,
-) -> ResultadoRellenoUnico:
-    """Rellena plantilla desde un proveedor (ArchivoDocumento por RUT)."""
-    return _rellenar_con_indice(
-        plantilla,
-        tipo=tipo,
-        periodo_etiqueta=etiqueta_origen,
-        docs_idx=docs_idx,
-        guardar_como=guardar_como,
-        vacio_msg=(
-            f"Ningún RUT de la plantilla tiene '{tipo}' en el proveedor "
-            f"({etiqueta_origen}). Origen de archivos aún pendiente de definición."
-        ),
-    )
-
-
-def rellenar_plantilla_un_documento(
-    plantilla: Path,
-    *,
-    tipo_gcs: str,
-    layout: str = "yyyy_mm",
-    periodo_gcs: str | None = None,
-    guardar_como: Path | None = None,
-    referencia: date | None = None,
-) -> ResultadoRellenoUnico:
-    """
-    Escribe nombre del PDF en 'nombre_de_archivo'.
-    Solo deja filas con documento en GCS; borra el resto.
-    No toca columnas de RUT/Nombre ni inventa documento_asociado_*.
-    """
-    docs_idx, periodo = buscar_docs_tipo(
-        tipo_gcs, periodo=periodo_gcs, layout=layout, referencia=referencia
-    )
-    if layout == "vigente":
-        vacio = (
-            f"Ningún RUT tiene '{tipo_gcs}' vigente en GCS "
-            f"(layout provisional Trabajadores/{{rut}}/{tipo_gcs}/)."
-        )
-    else:
-        vacio = f"Ningún RUT tiene '{tipo_gcs}' en GCS para periodo '{periodo}'."
-    return _rellenar_con_indice(
-        plantilla,
-        tipo=tipo_gcs,
-        periodo_etiqueta=periodo,
-        docs_idx=docs_idx,
-        guardar_como=guardar_como,
-        vacio_msg=vacio,
-    )
