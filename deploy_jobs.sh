@@ -7,6 +7,11 @@
 # Credenciales del portal / tokens: configuralas una vez en Consola o con
 # gcloud run jobs update ... --update-env-vars=SUBCONTRATALEY_...
 # (este script solo setea vars base).
+#
+# maxRetries=0 en todos los jobs.
+# subcontrataley-documentos-trabajador NO se despliega por defecto (origen de
+# PDFs aún no definido). Activar:
+#   DEPLOY_DOCUMENTOS_TRABAJADOR=true bash deploy_jobs.sh
 
 set -e
 
@@ -15,6 +20,7 @@ REGION="us-east1"
 IMAGE="gcr.io/${PROJECT_ID}/subcontrataley-webscrapper:latest"
 SERVICE_ACCOUNT="webscrapper@${PROJECT_ID}.iam.gserviceaccount.com"
 ENV_BASE="GCS_BUCKET_NAME=worldwide-documentos-instalaciones,HEADLESS=true,IMPLICIT_WAIT=10,EXPLICIT_WAIT=40,INGRESO_CARGA_TIMEOUT=600"
+DEPLOY_DOCUMENTOS_TRABAJADOR="${DEPLOY_DOCUMENTOS_TRABAJADOR:-false}"
 
 echo "🚀 Desplegando Cloud Run Jobs Subcontrataley..."
 
@@ -37,7 +43,7 @@ deploy_job() {
         --task-timeout=3600 \
         --memory=4Gi \
         --cpu=2 \
-        --max-retries=1 \
+        --max-retries=0 \
         --command=python \
         --args="${SCRIPT_NAME}" 2>/dev/null; then
         echo "✅ Job ${JOB_NAME} actualizado"
@@ -51,7 +57,7 @@ deploy_job() {
             --task-timeout=3600 \
             --memory=4Gi \
             --cpu=2 \
-            --max-retries=1 \
+            --max-retries=0 \
             --command=python \
             --args="${SCRIPT_NAME}"
         echo "✅ Job ${JOB_NAME} creado"
@@ -66,34 +72,38 @@ deploy_job "subcontrataley-pagos-isapre-fonasa" "pagos_isapre_fonasa_cloudrun.py
 deploy_job "subcontrataley-pagos-mutualidades" "pagos_mutualidades_cloudrun.py"
 deploy_job "subcontrataley-pagos-cajas" "pagos_cajas_compensacion_cloudrun.py"
 
-# 15 docs vigentes: timeout más largo (mismo helper, timeout distinto)
-echo "🔧 Desplegando job: subcontrataley-documentos-trabajador → documentos_trabajador_cloudrun.py"
-if gcloud run jobs update "subcontrataley-documentos-trabajador" \
-    --image="${IMAGE}" \
-    --region="${REGION}" \
-    --update-env-vars="${ENV_BASE}" \
-    --service-account="${SERVICE_ACCOUNT}" \
-    --task-timeout=10800 \
-    --memory=4Gi \
-    --cpu=2 \
-    --max-retries=1 \
-    --command=python \
-    --args="documentos_trabajador_cloudrun.py" 2>/dev/null; then
-    echo "✅ Job subcontrataley-documentos-trabajador actualizado"
-else
-    echo "📝 Creando nuevo job subcontrataley-documentos-trabajador..."
-    gcloud run jobs create "subcontrataley-documentos-trabajador" \
+# 15 docs vigentes: timeout más largo. Deshabilitado por defecto (origen PDFs pendiente).
+if [ "${DEPLOY_DOCUMENTOS_TRABAJADOR}" = "true" ]; then
+    echo "🔧 Desplegando job: subcontrataley-documentos-trabajador → documentos_trabajador_cloudrun.py"
+    if gcloud run jobs update "subcontrataley-documentos-trabajador" \
         --image="${IMAGE}" \
         --region="${REGION}" \
-        --set-env-vars="${ENV_BASE}" \
+        --update-env-vars="${ENV_BASE}" \
         --service-account="${SERVICE_ACCOUNT}" \
         --task-timeout=10800 \
         --memory=4Gi \
         --cpu=2 \
-        --max-retries=1 \
+        --max-retries=0 \
         --command=python \
-        --args="documentos_trabajador_cloudrun.py"
-    echo "✅ Job subcontrataley-documentos-trabajador creado"
+        --args="documentos_trabajador_cloudrun.py" 2>/dev/null; then
+        echo "✅ Job subcontrataley-documentos-trabajador actualizado"
+    else
+        echo "📝 Creando nuevo job subcontrataley-documentos-trabajador..."
+        gcloud run jobs create "subcontrataley-documentos-trabajador" \
+            --image="${IMAGE}" \
+            --region="${REGION}" \
+            --set-env-vars="${ENV_BASE}" \
+            --service-account="${SERVICE_ACCOUNT}" \
+            --task-timeout=10800 \
+            --memory=4Gi \
+            --cpu=2 \
+            --max-retries=0 \
+            --command=python \
+            --args="documentos_trabajador_cloudrun.py"
+        echo "✅ Job subcontrataley-documentos-trabajador creado"
+    fi
+else
+    echo "⏭️ Omitiendo subcontrataley-documentos-trabajador (DEPLOY_DOCUMENTOS_TRABAJADOR≠true; origen de PDFs pendiente)"
 fi
 
 echo "✅ Todos los jobs desplegados."
@@ -103,10 +113,11 @@ echo "  gcloud run jobs update subcontrataley-libro-asistencia --region=${REGION
 echo "    --update-env-vars=\"SUBCONTRATALEY_USERNAME=...,SUBCONTRATALEY_PASSWORD=...\""
 echo "  gcloud run jobs update subcontrataley-ingreso-trabajadores --region=${REGION} \\"
 echo "    --update-env-vars=\"SUBCONTRATALEY_USERNAME=...,SUBCONTRATALEY_PASSWORD=...,TOKEN_CR_CONTRATOS=...\""
+echo "  # documentos-trabajador (solo si DEPLOY_DOCUMENTOS_TRABAJADOR=true):"
 echo "  gcloud run jobs update subcontrataley-documentos-trabajador --region=${REGION} \\"
 echo "    --update-env-vars=\"SUBCONTRATALEY_USERNAME=...,SUBCONTRATALEY_PASSWORD=...,DRY_RUN=true\""
 echo ""
 echo "Ejecutar:"
 echo "  gcloud run jobs execute subcontrataley-libro-asistencia --region=${REGION}"
 echo "  gcloud run jobs execute subcontrataley-ingreso-trabajadores --region=${REGION}"
-echo "  gcloud run jobs execute subcontrataley-documentos-trabajador --region=${REGION}"
+echo "  # gcloud run jobs execute subcontrataley-documentos-trabajador --region=${REGION}"

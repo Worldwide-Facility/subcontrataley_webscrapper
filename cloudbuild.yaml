@@ -4,6 +4,10 @@
 #
 # - En UPDATE: --update-env-vars (no pisa passwords/tokens ya configurados).
 # - En CREATE: --set-env-vars con _ENV_BASE.
+# - maxRetries=0 en todos los jobs (sin reintento automático de tarea).
+# - subcontrataley-documentos-trabajador NO se crea/actualiza por defecto:
+#   origen de PDFs aún no definido. Activar con substitution
+#   _DEPLOY_DOCUMENTOS_TRABAJADOR=true (trigger override o builds submit).
 #
 #   gcloud builds submit --config=cloudbuild.yaml .
 #   gcloud run jobs execute subcontrataley-libro-asistencia --region=us-east1
@@ -15,6 +19,8 @@ substitutions:
   _SA: webscrapper@worldwide-470917.iam.gserviceaccount.com
   _ENV_BASE: >-
     GCS_BUCKET_NAME=worldwide-documentos-instalaciones,HEADLESS=true,IMPLICIT_WAIT=10,EXPLICIT_WAIT=40,INGRESO_CARGA_TIMEOUT=600
+  # false = no tocar el job (default seguro en push a main). true = create/update.
+  _DEPLOY_DOCUMENTOS_TRABAJADOR: "false"
 
 steps:
   # Paso 1: Construir la imagen Docker
@@ -67,7 +73,7 @@ steps:
             --task-timeout=3600 \
             --memory=4Gi \
             --cpu=2 \
-            --max-retries=1 \
+            --max-retries=0 \
             --command=python \
             --args="$${ARGS}"
         else
@@ -80,7 +86,7 @@ steps:
             --task-timeout=3600 \
             --memory=4Gi \
             --cpu=2 \
-            --max-retries=1 \
+            --max-retries=0 \
             --command=python \
             --args="$${ARGS}" || {
             echo "⚠️ Error creando job (puede que ya exista), intentando actualizar..."
@@ -92,7 +98,7 @@ steps:
               --task-timeout=3600 \
               --memory=4Gi \
               --cpu=2 \
-              --max-retries=1 \
+              --max-retries=0 \
               --command=python \
               --args="$${ARGS}"
           }
@@ -126,7 +132,7 @@ steps:
             --task-timeout=3600 \
             --memory=4Gi \
             --cpu=2 \
-            --max-retries=1 \
+            --max-retries=0 \
             --command=python \
             --args="$${ARGS}"
         else
@@ -139,7 +145,7 @@ steps:
             --task-timeout=3600 \
             --memory=4Gi \
             --cpu=2 \
-            --max-retries=1 \
+            --max-retries=0 \
             --command=python \
             --args="$${ARGS}" || {
             echo "⚠️ Error creando job (puede que ya exista), intentando actualizar..."
@@ -151,7 +157,7 @@ steps:
               --task-timeout=3600 \
               --memory=4Gi \
               --cpu=2 \
-              --max-retries=1 \
+              --max-retries=0 \
               --command=python \
               --args="$${ARGS}"
           }
@@ -183,7 +189,7 @@ steps:
               --task-timeout=3600 \
               --memory=4Gi \
               --cpu=2 \
-              --max-retries=1 \
+              --max-retries=0 \
               --command=python \
               --args="$${ARGS}"
           else
@@ -195,7 +201,7 @@ steps:
               --task-timeout=3600 \
               --memory=4Gi \
               --cpu=2 \
-              --max-retries=1 \
+              --max-retries=0 \
               --command=python \
               --args="$${ARGS}"
           fi
@@ -207,34 +213,40 @@ steps:
         deploy subcontrataley-pagos-mutualidades pagos_mutualidades_cloudrun.py
         deploy subcontrataley-pagos-cajas pagos_cajas_compensacion_cloudrun.py
 
-        # Documentos vigentes del trabajador (15 tipos; timeout 3h)
-        JOB="subcontrataley-documentos-trabajador"
-        ARGS="documentos_trabajador_cloudrun.py"
-        echo "🔧 $${JOB} → $${ARGS} (timeout 10800s)"
-        if gcloud run jobs describe "$${JOB}" --region "$${REGION}" >/dev/null 2>&1; then
-          gcloud run jobs update "$${JOB}" \
-            --image="$${IMAGE}" \
-            --region="$${REGION}" \
-            --update-env-vars="$${ENV_VARS}" \
-            --service-account="$${SA}" \
-            --task-timeout=10800 \
-            --memory=4Gi \
-            --cpu=2 \
-            --max-retries=1 \
-            --command=python \
-            --args="$${ARGS}"
+        # Documentos vigentes del trabajador (15 tipos; timeout 3h).
+        # Deshabilitado por defecto: origen de archivos aún no definido.
+        # Habilitar: --substitutions=_DEPLOY_DOCUMENTOS_TRABAJADOR=true
+        if [ "${_DEPLOY_DOCUMENTOS_TRABAJADOR}" = "true" ]; then
+          JOB="subcontrataley-documentos-trabajador"
+          ARGS="documentos_trabajador_cloudrun.py"
+          echo "🔧 $${JOB} → $${ARGS} (timeout 10800s)"
+          if gcloud run jobs describe "$${JOB}" --region "$${REGION}" >/dev/null 2>&1; then
+            gcloud run jobs update "$${JOB}" \
+              --image="$${IMAGE}" \
+              --region="$${REGION}" \
+              --update-env-vars="$${ENV_VARS}" \
+              --service-account="$${SA}" \
+              --task-timeout=10800 \
+              --memory=4Gi \
+              --cpu=2 \
+              --max-retries=0 \
+              --command=python \
+              --args="$${ARGS}"
+          else
+            gcloud run jobs create "$${JOB}" \
+              --image="$${IMAGE}" \
+              --region="$${REGION}" \
+              --set-env-vars="$${ENV_VARS}" \
+              --service-account="$${SA}" \
+              --task-timeout=10800 \
+              --memory=4Gi \
+              --cpu=2 \
+              --max-retries=0 \
+              --command=python \
+              --args="$${ARGS}"
+          fi
         else
-          gcloud run jobs create "$${JOB}" \
-            --image="$${IMAGE}" \
-            --region="$${REGION}" \
-            --set-env-vars="$${ENV_VARS}" \
-            --service-account="$${SA}" \
-            --task-timeout=10800 \
-            --memory=4Gi \
-            --cpu=2 \
-            --max-retries=1 \
-            --command=python \
-            --args="$${ARGS}"
+          echo "⏭️ Omitiendo subcontrataley-documentos-trabajador (_DEPLOY_DOCUMENTOS_TRABAJADOR≠true; origen de PDFs pendiente)"
         fi
     waitFor: [push-sha, push-latest]
 
