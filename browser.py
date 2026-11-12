@@ -1130,11 +1130,20 @@ def esperar_resultado_validacion(
 
 JS_RESUMEN_CARGA = """
 const t = document.body.innerText || '';
-const m = t.match(/Documentos\\s+Agregados\\s*:\\s*(\\d+)/i);
+const mAgg = t.match(/Documentos\\s+Agregados\\s*:\\s*(\\d+)/i);
+const mSub = t.match(/Documentos\\s+Subidos\\s*:\\s*(\\d+)/i)
+          || t.match(/\\bSubidos\\s*:\\s*(\\d+)/i);
+const mErr = t.match(/errores\\s+(?:encontrados\\s*)?:\\s*(\\d+)/i)
+          || t.match(/(\\d+)\\s*errores\\s+encontrados/i);
 const vis = e => !!(e && e.offsetParent !== null);
 const modals = [...document.querySelectorAll('.modal,.swal2-popup,.bootbox,.alert,[role=alert]')]
   .filter(vis).map(e => (e.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 300));
-return {agregados: m ? parseInt(m[1], 10) : null, modals: modals};
+return {
+  agregados: mAgg ? parseInt(mAgg[1], 10) : null,
+  subidos: mSub ? parseInt(mSub[1], 10) : null,
+  errores: mErr ? parseInt(mErr[1], 10) : 0,
+  modals: modals
+};
 """
 
 
@@ -1163,14 +1172,39 @@ def esperar_post_carga(
             screenshot(driver, f"{prefijo_shot}_post_carga.png")
             resumen = dict(resumen, ok=True)
             logger.info(
-                "[%s] Carga masiva enviada: Documentos Agregados=%s | %s (%.0fs)",
-                etiqueta, resumen.get("agregados"), resumen.get("modals"), time.time() - t0,
+                "[%s] Carga masiva enviada: Documentos Agregados=%s subidos=%s errores=%s | %s (%.0fs)",
+                etiqueta,
+                resumen.get("agregados"),
+                resumen.get("subidos"),
+                resumen.get("errores"),
+                resumen.get("modals"),
+                time.time() - t0,
             )
             return resumen
         time.sleep(1)
     screenshot(driver, f"{prefijo_shot}_sin_progreso_post_carga.png")
     logger.warning("[%s] No apareció 'Documentos Agregados' en %.0fs; revisar UI", etiqueta, timeout)
     return dict(resumen, ok=False)
+
+
+def asegurar_resultado_post_carga(resumen: dict, *, etiqueta: str = "carga") -> dict:
+    """
+    Falla la carga si el portal no mostró fin ('Documentos Agregados') o si
+    subidos==0 con errores>0. `subidos` cae a `agregados` si el portal no lo muestra.
+    """
+    if not resumen.get("ok"):
+        raise RuntimeError(
+            f"[{etiqueta}] Post-carga falló (no apareció 'Documentos Agregados'): {resumen}"
+        )
+    subidos = resumen.get("subidos")
+    if subidos is None:
+        subidos = resumen.get("agregados")
+    errores = int(resumen.get("errores") or 0)
+    if subidos is not None and int(subidos) == 0 and errores > 0:
+        raise RuntimeError(
+            f"[{etiqueta}] Post-carga: subidos=0 con errores={errores}: {resumen}"
+        )
+    return resumen
 
 
 def _norm(texto: str) -> str:

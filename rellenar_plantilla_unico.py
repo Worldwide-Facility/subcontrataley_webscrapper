@@ -30,6 +30,8 @@ class ResultadoRellenoUnico:
     eliminadas: int = 0
     ruts_eliminados: list[str] = field(default_factory=list)
     docs: list[DocGCS] = field(default_factory=list)
+    # Referencias del proveedor (docs trabajador); no usa GCS hardcodeado
+    archivos: list = field(default_factory=list)
 
 
 def _mapa_columnas(ws: Worksheet) -> dict[str, int]:
@@ -49,6 +51,84 @@ def _col(mapa: dict[str, int], *nombres: str) -> int:
         if n.lower() in mapa:
             return mapa[n.lower()]
     raise KeyError(f"No encontré columna {nombres} en encabezados {list(mapa)}")
+
+
+def rellenar_plantilla_desde_archivos(
+    plantilla: Path,
+    *,
+    tipo: str,
+    docs_idx: dict,
+    etiqueta_origen: str = "proveedor",
+    guardar_como: Path | None = None,
+) -> ResultadoRellenoUnico:
+    """
+    Igual que rellenar_plantilla_un_documento, pero el índice RUT→archivo
+    viene de un proveedor (valores con atributo `.nombre`), no de GCS directo.
+    """
+    wb = load_workbook(plantilla)
+    if HOJA_DOCUMENTOS not in wb.sheetnames:
+        raise ValueError(f"No existe hoja '{HOJA_DOCUMENTOS}' en {plantilla}")
+    ws = wb[HOJA_DOCUMENTOS]
+    cols = _mapa_columnas(ws)
+    col_archivo = _col(cols, "nombre_de_archivo")
+    col_rut = _col(cols, "rut", "RUT")
+    cols_asociados = [
+        cols[k] for k in cols if k.startswith("documento_asociado")
+    ]
+
+    res = ResultadoRellenoUnico(plantilla=plantilla, periodo_gcs=etiqueta_origen)
+    filas_a_borrar: list[int] = []
+    a_mantener: list[tuple[int, object]] = []
+
+    for row in range(2, ws.max_row + 1):
+        rut_raw = ws.cell(row, col_rut).value
+        if rut_raw is None or str(rut_raw).strip() == "":
+            filas_a_borrar.append(row)
+            continue
+        res.filas_originales += 1
+        rut_str = str(rut_raw).strip()
+        cuerpo = rut_cuerpo(rut_str)
+        doc = docs_idx.get(cuerpo)
+        if not doc:
+            filas_a_borrar.append(row)
+            res.ruts_eliminados.append(rut_str)
+            continue
+        a_mantener.append((row, doc))
+
+    vistos: set[str] = set()
+    for row, doc in a_mantener:
+        nombre = doc.nombre
+        ws.cell(row, col_archivo, nombre)
+        for col in cols_asociados:
+            ws.cell(row, col, "")
+        if nombre not in vistos:
+            res.archivos.append(doc)
+            vistos.add(nombre)
+
+    for row in sorted(filas_a_borrar, reverse=True):
+        ws.delete_rows(row, 1)
+
+    res.eliminadas = len(res.ruts_eliminados)
+    res.filas = len(a_mantener)
+    dest = guardar_como or plantilla
+    wb.save(dest)
+    res.plantilla = dest
+
+    logger.info(
+        "Plantilla proveedor tipo=%s origen=%s | orig=%s keep=%s elim=%s → %s",
+        tipo,
+        etiqueta_origen,
+        res.filas_originales,
+        res.filas,
+        res.eliminadas,
+        dest,
+    )
+    if res.filas == 0:
+        raise ValueError(
+            f"Ningún RUT de la plantilla tiene '{tipo}' en el proveedor "
+            f"({etiqueta_origen}). Origen de archivos aún pendiente."
+        )
+    return res
 
 
 def rellenar_plantilla_un_documento(

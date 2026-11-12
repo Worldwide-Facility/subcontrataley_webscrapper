@@ -1,26 +1,24 @@
-"""Documentos vigentes de trabajador: 1 PDF por RUT, sin carpeta de mes.
+"""Documentos vigentes del trabajador — mismo flujo de plantillas que pagos/liq.
 
-GCS: Trabajadores/{rut}/{tipo_gcs}/{archivo}.pdf
-El portal igual pide periodo; ese mes solo se elige en la UI.
+Navegación y XPaths: idénticos a liquidaciones/pagos (`llegar_a_cargar_plantillas`,
+`liquidaciones.select_tipo`, periodo, plantilla Excel, dropzone cmsd_*).
+Única diferencia: opción del select Documento = `nombre_ui` exacto (15 tipos).
+
+Metadato `NivelCarga.PERSONA` (1 PDF por RUT). Origen de archivos desacoplado
+vía proveedor (local|gcs provisional; definitivo pendiente).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from browser import (
-    cargar_documentos_dropzone,
-    click_mutante,
-    click_xpath,
     click_y_esperar_descarga,
-    dry_run,
-    enviar_archivos,
-    esperar_post_carga,
-    esperar_resultado_validacion,
     esperar_select_cargado,
     screenshot,
     seleccionar_periodo_mes_anterior,
@@ -28,19 +26,27 @@ from browser import (
     xpk,
 )
 from config import DOWNLOAD_DIR
+from flows.carga_masiva_compartida import ejecutar_carga_masiva_excel_y_pdfs
 from flows.llegar_a_plantillas import llegar_a_cargar_plantillas
+from flows.nivel_carga import NivelCarga
 from flows.plantilla_schema import GLOB_PLANTILLA
-from gcs_docs import descargar_docs
-from rellenar_plantilla_unico import rellenar_plantilla_un_documento
+from flows.proveedor_documentos_trabajador import (
+    ProveedorArchivosTrabajador,
+    proveedor_desde_env,
+)
+from rellenar_plantilla_unico import rellenar_plantilla_desde_archivos
 
 logger = logging.getLogger(__name__)
+
+NIVEL = NivelCarga.PERSONA
 
 
 @dataclass(frozen=True)
 class DocumentoTrabajador:
     clave: str
-    nombre_ui: str  # texto exacto del <select> Documento
-    tipo_gcs: str  # carpeta Trabajadores/{rut}/{tipo_gcs}/
+    nombre_ui: str  # texto exacto del <select> Documento (liquidaciones.select_tipo)
+    tipo_gcs: str  # clave de tipo para el proveedor (provisional)
+    nivel: NivelCarga = NivelCarga.PERSONA
 
 
 DOCUMENTOS_TRABAJADOR: tuple[DocumentoTrabajador, ...] = (
@@ -122,9 +128,39 @@ DOCUMENTOS_TRABAJADOR: tuple[DocumentoTrabajador, ...] = (
 )
 
 
-def ejecutar_documento(cfg: DocumentoTrabajador) -> Callable:
-    """Fábrica para FLUJOS_CARGA: ejecutar(driver, wait)."""
+def seleccionar_documentos(
+    claves: Iterable[str] | None = None,
+) -> tuple[DocumentoTrabajador, ...]:
+    if claves is None:
+        return DOCUMENTOS_TRABAJADOR
+    pedidas = [c.strip() for c in claves if str(c).strip()]
+    if not pedidas:
+        return DOCUMENTOS_TRABAJADOR
+    por_clave = {d.clave: d for d in DOCUMENTOS_TRABAJADOR}
+    desconocidas = [c for c in pedidas if c not in por_clave]
+    if desconocidas:
+        raise ValueError(
+            f"Claves de documento desconocidas: {desconocidas}. "
+            f"Válidas: {sorted(por_clave)}"
+        )
+    return tuple(por_clave[c] for c in pedidas)
 
+
+def documentos_desde_env(
+    env_var: str = "DOCUMENTOS_TRABAJADOR_CLAVES",
+) -> tuple[DocumentoTrabajador, ...]:
+    raw = (os.environ.get(env_var) or "").strip()
+    if not raw:
+        return DOCUMENTOS_TRABAJADOR
+    return seleccionar_documentos(raw.split(","))
+
+
+def usa_mismo_flujo_plantillas(cfg: DocumentoTrabajador) -> bool:
+    """Los 15 usan el mismo flujo cmsd_*/liquidaciones.*; solo cambia el select."""
+    return cfg.clave in {d.clave for d in DOCUMENTOS_TRABAJADOR}
+
+
+def ejecutar_documento(cfg: DocumentoTrabajador) -> Callable:
     def ejecutar(driver, wait) -> Path:
         return ejecutar_carga_documento_trabajador(driver, wait, cfg)
 
@@ -132,14 +168,17 @@ def ejecutar_documento(cfg: DocumentoTrabajador) -> Callable:
     return ejecutar
 
 
-def _elegir_tipo_y_periodo(driver, wait, clave: str, tipo: str) -> str:
-    logger.info("[%s] Eligiendo tipo: %s", clave, tipo)
-    seleccionar_por_texto(driver, wait, xpk(driver, "liquidaciones.select_tipo"), tipo)
+def _elegir_tipo_y_periodo(driver, wait, clave: str, tipo_ui: str) -> str:
+    """Mismos selectores que pagos/liquidaciones; `tipo_ui` = opción del select."""
+    logger.info("[%s] Eligiendo tipo (select Documento): %s", clave, tipo_ui)
+    seleccionar_por_texto(
+        driver, wait, xpk(driver, "liquidaciones.select_tipo"), tipo_ui
+    )
     logger.info("[%s] Esperando select de periodo…", clave)
     esperar_select_cargado(
         driver, wait, xpk(driver, "liquidaciones.select_periodo"), min_opciones=1
     )
-    logger.info("[%s] Periodo mes anterior (solo UI; el PDF es vigente)", clave)
+    logger.info("[%s] Periodo mes anterior (UI; origen PDF desacoplado)", clave)
     periodo_ui = seleccionar_periodo_mes_anterior(
         driver, wait, xpk(driver, "liquidaciones.select_periodo")
     )
@@ -147,8 +186,31 @@ def _elegir_tipo_y_periodo(driver, wait, clave: str, tipo: str) -> str:
     return periodo_ui
 
 
-def ejecutar_carga_documento_trabajador(driver, wait, cfg: DocumentoTrabajador) -> Path:
-    """Carga masiva de un documento vigente: plantilla por RUT + 1 PDF."""
+def ejecutar_carga_documento_trabajador(
+    driver,
+    wait,
+    cfg: DocumentoTrabajador,
+    *,
+    proveedor: ProveedorArchivosTrabajador | None = None,
+) -> Path:
+    """
+    Mismo tronco que pagos 1-doc: plantillas → select tipo=`nombre_ui` →
+    periodo → Excel + PDFs → dropzone → validar → Documentos Agregados.
+    """
+    if not usa_mismo_flujo_plantillas(cfg):
+        raise ValueError(f"{cfg.clave} no está en el catálogo de 15 docs")
+    if cfg.nivel != NivelCarga.PERSONA:
+        raise ValueError(f"{cfg.clave}: se espera nivel=PERSONA, got {cfg.nivel}")
+
+    prov = proveedor or proveedor_desde_env()
+    logger.info(
+        "[%s] nivel=%s | mismo flujo plantillas | select='%s' | proveedor=%s",
+        cfg.clave,
+        NIVEL.value,
+        cfg.nombre_ui,
+        prov.nombre,
+    )
+
     llegar_a_cargar_plantillas(driver, wait)
     periodo_ui = _elegir_tipo_y_periodo(driver, wait, cfg.clave, cfg.nombre_ui)
     screenshot(driver, f"{cfg.clave}_tipo_periodo.png")
@@ -162,73 +224,37 @@ def ejecutar_carga_documento_trabajador(driver, wait, cfg: DocumentoTrabajador) 
     )
     screenshot(driver, f"{cfg.clave}_plantilla_descargada.png")
 
+    docs_idx = prov.indice_por_rut(cfg.tipo_gcs)
     logger.info(
-        "[%s] Rellenando Excel (UI='%s', GCS vigente, tipo=%s)",
+        "[%s] Rellenando Excel (UI='%s' periodo_ui='%s', proveedor=%s, ruts=%s)",
         cfg.clave,
+        cfg.nombre_ui,
         periodo_ui,
-        cfg.tipo_gcs,
+        prov.nombre,
+        len(docs_idx),
     )
-    resultado = rellenar_plantilla_un_documento(
+    resultado = rellenar_plantilla_desde_archivos(
         plantilla,
-        tipo_gcs=cfg.tipo_gcs,
-        layout="vigente",
+        tipo=cfg.tipo_gcs,
+        docs_idx=docs_idx,
+        etiqueta_origen=f"{prov.nombre}:{cfg.tipo_gcs}",
     )
     plantilla = resultado.plantilla
 
-    staging = DOWNLOAD_DIR / f"staging_{cfg.clave}" / "vigente"
-    logger.info("[%s] Descargando %s PDFs → %s", cfg.clave, resultado.filas, staging)
-    paths = descargar_docs(resultado.docs, staging)
-    resumen = f"keep={resultado.filas} | elim={resultado.eliminadas}"
-
-    logger.info("[%s] Ir a pantalla de carga", cfg.clave)
-    click_xpath(driver, wait, xpk(driver, "liquidaciones.ir_a_cargar"))
-    time.sleep(2)
-    screenshot(driver, f"{cfg.clave}_pantalla_carga.png")
-
-    logger.info("[%s] Subiendo Excel: %s", cfg.clave, plantilla.name)
-    enviar_archivos(driver, wait, "liquidaciones.input_excel", [plantilla])
-    time.sleep(1)
-    click_mutante(
-        driver, wait, "liquidaciones.btn_enviar_excel",
-        "click 'Cargar Excel' (sube la plantilla al portal)",
+    staging = DOWNLOAD_DIR / f"staging_{cfg.clave}" / prov.nombre
+    logger.info("[%s] Materializando %s PDFs → %s", cfg.clave, resultado.filas, staging)
+    paths = prov.materializar(list(resultado.archivos), staging)
+    resumen = (
+        f"keep={resultado.filas} | elim={resultado.eliminadas} | "
+        f"proveedor={prov.nombre}"
     )
-    time.sleep(2)
-    screenshot(driver, f"{cfg.clave}_excel_enviado.png")
 
-    logger.info("[%s] Subiendo %s documentos", cfg.clave, len(paths))
-    cargar_documentos_dropzone(
-        driver, wait, "liquidaciones.zona_upload_liquidaciones", paths,
-        plantilla=plantilla, columna="nombre_de_archivo", etiqueta=cfg.clave,
+    return ejecutar_carga_masiva_excel_y_pdfs(
+        driver,
+        wait,
+        etiqueta=cfg.clave,
+        plantilla=plantilla,
+        paths=paths,
+        nivel=NIVEL,
+        resumen_prep=resumen,
     )
-    screenshot(driver, f"{cfg.clave}_pdfs.png")
-
-    logger.info("[%s] Confirmar carga", cfg.clave)
-    click_mutante(
-        driver, wait, "liquidaciones.btn_confirmar_carga",
-        "click 'Validar Documentos' (envía la carga a validación)",
-    )
-    if not dry_run():
-        esperar_resultado_validacion(
-            driver, timeout=180, etiqueta=cfg.clave, prefijo_shot=cfg.clave
-        )
-    screenshot(driver, f"{cfg.clave}_confirmar.png")
-
-    logger.info("[%s] Post-confirmar", cfg.clave)
-    click_mutante(
-        driver, wait, "liquidaciones.btn_post_confirmar",
-        "click 'Realizar Carga Masiva' (carga definitiva; #cmsd_btn_realizar_carga_masiva)",
-    )
-    time.sleep(2)
-    screenshot(driver, f"{cfg.clave}_post_confirmar.png")
-    if not dry_run():
-        esperar_post_carga(driver, etiqueta=cfg.clave, prefijo_shot=cfg.clave, timeout=120)
-
-    logger.info(
-        "[%s] %s | excel=%s | pdfs=%s | %s",
-        cfg.clave,
-        "DRY_RUN: carga NO enviada" if dry_run() else "OK",
-        plantilla.name,
-        len(paths),
-        resumen,
-    )
-    return plantilla

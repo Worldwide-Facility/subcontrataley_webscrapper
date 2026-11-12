@@ -1,8 +1,14 @@
-"""Configs de flujos de pago (1 archivo por línea, mismo PDF Cotizaciones)."""
+"""Configs de flujos de pago (1 archivo por línea, mismo PDF Cotizaciones).
+
+Nivel de portal: FAENA (Cargas Masivas → plantillas cmsd_*). No confundir con
+documentos vigentes del trabajador (NivelCarga.PERSONA, por RUT).
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from flows.nivel_carga import NivelCarga
 
 
 @dataclass(frozen=True)
@@ -18,6 +24,8 @@ class FlujoPagoConfig:
     por_faena: bool = False
     # Etiqueta del PDF fusionado: {slug_faena}_{etiqueta}_{periodo}.pdf
     etiqueta_archivo: str = ""
+    # Todos los pagos son carga a nivel FAENA (plantillas), no ficha de trabajador.
+    nivel: NivelCarga = NivelCarga.FAENA
 
 
 PAGOS_AFP_AFC = FlujoPagoConfig(
