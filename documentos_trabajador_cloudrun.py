@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Entry point Cloud Run Job: documentos vigentes del trabajador (nivel PERSONA).
+"""Entry point Cloud Run Job: documentos vigentes del trabajador.
 
-Carga por RUT en la sección de documentos del trabajador (NO plantillas faena).
-Por defecto recorre los 15 tipos. Filtrar con
-DOCUMENTOS_TRABAJADOR_CLAVES=clave1,clave2 (CSV de claves).
+Misma navegación/XPaths que liquidaciones/pagos (plantillas cmsd_*);
+solo cambia la opción del select Documento (15 nombres UI).
+Metadato nivel=PERSONA. Filtrar con DOCUMENTOS_TRABAJADOR_CLAVES=clave1,clave2.
 """
 
 from __future__ import annotations
@@ -61,10 +61,15 @@ def main() -> int:
         for cfg in docs:
             logger.info("--- Inicio %s (%s) ---", cfg.clave, cfg.nombre_ui)
             try:
-                n = ejecutar_carga_documento_trabajador(
+                plantilla = ejecutar_carga_documento_trabajador(
                     driver, wait, cfg, proveedor=proveedor
                 )
-                logger.info("OK %s | ruts=%s | nivel=persona", cfg.clave, n)
+                logger.info(
+                    "OK %s | excel=%s | nivel=persona | select=%s",
+                    cfg.clave,
+                    plantilla,
+                    cfg.nombre_ui,
+                )
             except Exception:
                 logger.error(
                     "Fallo documento %s:\n%s", cfg.clave, traceback.format_exc()

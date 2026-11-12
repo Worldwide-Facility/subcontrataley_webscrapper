@@ -86,11 +86,11 @@ gcloud run jobs execute subcontrataley-ingreso-trabajadores --region=us-east1
 gcloud run jobs execute subcontrataley-documentos-trabajador --region=us-east1
 ```
 
-Documentos vigentes del trabajador: **nivel PERSONA** (por RUT en la sección de
-documentos del trabajador). No usan plantillas de faena (`cmsd_*` / Cargar plantillas).
-Reutilizan dropzone/validación/Documentos Agregados. XPaths `persona.*` pendientes
-de captura. **Origen de PDFs pendiente**; proveedor provisional:
-`DOCUMENTOS_TRABAJADOR_FUENTE=local|gcs` (+ `DOCUMENTOS_TRABAJADOR_LOCAL_ROOT` si local).
+Documentos vigentes del trabajador: **misma navegación/XPaths** que
+liquidaciones/pagos (`llegar_a_cargar_plantillas` / `liquidaciones.*`); solo
+cambia la opción del select Documento (`nombre_ui`). Metadato `NivelCarga.PERSONA`.
+**Origen de PDFs pendiente**; proveedor:
+`DOCUMENTOS_TRABAJADOR_FUENTE=local|gcs` (+ `DOCUMENTOS_TRABAJADOR_LOCAL_ROOT`).
 Filtro: `DOCUMENTOS_TRABAJADOR_CLAVES=...`. Probar: `DRY_RUN=true`.
 
 ### Local (simula contenedor)
@@ -124,20 +124,21 @@ plantilla vacía fresca → rellenar → validar → carga masiva.
 | `listado_trabajadores` | Listado finiquitables |
 | `ingreso_trabajadores` | Solo subir plantilla ya rellena |
 | `ingreso_trabajadores_e2e` | Pipeline completo de ingreso |
-| `cedulas_identidad` (y 14 más) | Docs vigentes (nivel PERSONA, por RUT) |
+| `cedulas_identidad` (y 14 más) | Docs vigentes (mismo flujo plantillas; select distinto) |
 
 ```bash
 python run_flujo.py --list
 python run_flujo.py liquidaciones
 ```
 
-## Niveles de carga (faena vs persona)
+## Niveles de carga (metadato; misma navegación)
 
-| Nivel | Flujos | Navegación portal |
-|-------|--------|-------------------|
-| **FAENA** | liquidaciones, libro, pagos (AFP/Isapre/Mutual/Cajas) | Cargas Masivas → plantillas `cmsd_*` |
-| **PERSONA** | 15 docs vigentes del trabajador | Sección documentos del trabajador, por RUT (`persona.*`) |
+| Nivel | Flujos | Select Documento |
+|-------|--------|------------------|
+| **FAENA** | liquidaciones, libro, pagos | p.ej. Liquidaciones / Pagos AFP… |
+| **PERSONA** | 15 docs vigentes | p.ej. Cédulas de Identidad, Contratos… |
 
+Misma UI: Cargas Masivas → plantillas (`cmsd_*` / `liquidaciones.*`).
 Enum: `flows.nivel_carga.NivelCarga`.
 
 ## Cargas agrupadas por faena

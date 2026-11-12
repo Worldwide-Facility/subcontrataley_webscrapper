@@ -132,18 +132,6 @@ XPATHS = {
     "ingreso.btn_descargar_plantilla": "//*[@id='cmt_btn_descargar_plantilla']",
     # Tras validación OK (0 errores)
     "ingreso.btn_realizar_carga_masiva": "//*[@id='cmt_btn_realizar_carga_masiva']",
-    # --- Documentos del trabajador (nivel PERSONA, por RUT) ---
-    # Distinto de Cargas Masivas → plantillas faena (cmsd_*).
-    # Pendientes de captura en el portal; el flujo PERSONA avisa y no usa cmsd_*.
-    "persona.menu": None,
-    "persona.seccion_documentos": None,
-    "persona.input_buscar_rut": None,
-    "persona.btn_buscar": None,
-    "persona.abrir_ficha": None,
-    "persona.select_tipo_documento": None,
-    "persona.zona_upload": None,
-    "persona.btn_validar": None,
-    "persona.btn_realizar": None,
 }
 
 

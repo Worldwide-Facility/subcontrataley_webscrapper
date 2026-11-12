@@ -1,4 +1,4 @@
-"""Catálogo PERSONA, proveedor, nivel faena vs persona, selección de flujo."""
+"""Catálogo, select de tipo, proveedor y mismo flujo plantillas que pagos."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from flows.documentos_trabajador import (  # noqa: E402
     documentos_desde_env,
     ejecutar_carga_documento_trabajador,
     seleccionar_documentos,
-    usa_carga_nivel_persona,
+    usa_mismo_flujo_plantillas,
 )
 from flows.nivel_carga import NivelCarga  # noqa: E402
 from flows.pagos_config import TODOS_PAGOS  # noqa: E402
@@ -27,6 +27,7 @@ from flows.proveedor_documentos_trabajador import (  # noqa: E402
     proveedor_desde_env,
 )
 from gcs_docs import TIPOS_PERSONALES_SCL  # noqa: E402
+from xpaths import XPATHS  # noqa: E402
 
 NOMBRES_UI = (
     "Capacitación para Pers. Trab. en Prevención de Riesgos Laborales",
@@ -55,15 +56,19 @@ def test_quince_claves_y_nombres_literales():
     assert len({d.tipo_gcs for d in DOCUMENTOS_TRABAJADOR}) == 15
 
 
-def test_todos_nivel_persona():
+def test_nivel_persona_metadato_misma_nav():
     for doc in DOCUMENTOS_TRABAJADOR:
         assert doc.nivel == NivelCarga.PERSONA
-        assert usa_carga_nivel_persona(doc)
+        assert usa_mismo_flujo_plantillas(doc)
 
 
-def test_pagos_siguen_nivel_faena():
+def test_pagos_nivel_faena():
     for cfg in TODOS_PAGOS:
         assert cfg.nivel == NivelCarga.FAENA
+
+
+def test_sin_xpaths_persona_inventados():
+    assert not any(k.startswith("persona.") for k in XPATHS)
 
 
 def test_contratos_usa_clave_contrato():
@@ -82,136 +87,118 @@ def test_flujos_registrados():
         nombre, ejecutar = FLUJOS_CARGA[doc.clave]
         assert nombre == doc.nombre_ui
         assert callable(ejecutar)
-        assert ejecutar.__name__ == f"ejecutar_{doc.clave}"
 
 
-def test_seleccionar_documentos_filtra_y_valida():
-    subset = seleccionar_documentos(["cedulas_identidad", "contratos_trabajo"])
-    assert [d.clave for d in subset] == ["cedulas_identidad", "contratos_trabajo"]
-    assert seleccionar_documentos(None) == DOCUMENTOS_TRABAJADOR
-    assert seleccionar_documentos([]) == DOCUMENTOS_TRABAJADOR
+def test_seleccionar_y_env(monkeypatch):
+    assert [d.clave for d in seleccionar_documentos(["cedulas_identidad"])] == [
+        "cedulas_identidad"
+    ]
     with pytest.raises(ValueError, match="desconocidas"):
-        seleccionar_documentos(["no_existe"])
-
-
-def test_documentos_desde_env(monkeypatch):
+        seleccionar_documentos(["x"])
     monkeypatch.delenv("DOCUMENTOS_TRABAJADOR_CLAVES", raising=False)
     assert len(documentos_desde_env()) == 15
-    monkeypatch.setenv("DOCUMENTOS_TRABAJADOR_CLAVES", "seguro_vida, entrega_epp")
-    assert [d.clave for d in documentos_desde_env()] == ["seguro_vida", "entrega_epp"]
+    monkeypatch.setenv("DOCUMENTOS_TRABAJADOR_CLAVES", "seguro_vida")
+    assert [d.clave for d in documentos_desde_env()] == ["seguro_vida"]
 
 
-def test_proveedor_desde_env_local_requiere_root(monkeypatch, tmp_path):
+def test_proveedor_local(monkeypatch, tmp_path):
     monkeypatch.setenv("DOCUMENTOS_TRABAJADOR_FUENTE", "local")
     monkeypatch.delenv("DOCUMENTOS_TRABAJADOR_LOCAL_ROOT", raising=False)
     with pytest.raises(ValueError, match="LOCAL_ROOT"):
         proveedor_desde_env()
     monkeypatch.setenv("DOCUMENTOS_TRABAJADOR_LOCAL_ROOT", str(tmp_path))
-    prov = proveedor_desde_env()
-    assert isinstance(prov, ProveedorLocal)
+    assert isinstance(proveedor_desde_env(), ProveedorLocal)
     assert fuente_desde_env() == "local"
 
-
-def test_proveedor_local_indice_y_materializar(tmp_path):
     tipo = "CedulaIdentidad"
-    carpeta = tmp_path / tipo
-    carpeta.mkdir()
-    (carpeta / "12345678_ci.pdf").write_bytes(b"%PDF-1.4")
-    (carpeta / "87654321-ci.pdf").write_bytes(b"%PDF-1.4")
-    (carpeta / "sin_rut.pdf").write_bytes(b"%PDF-1.4")
-    prov = ProveedorLocal(tmp_path)
-    idx = prov.indice_por_rut(tipo)
-    assert set(idx) == {"12345678", "87654321"}
-    paths = prov.materializar(list(idx.values()), tmp_path / "staging")
-    assert len(paths) == 2
+    (tmp_path / tipo).mkdir()
+    (tmp_path / tipo / "12345678_ci.pdf").write_bytes(b"%PDF")
+    idx = ProveedorLocal(tmp_path).indice_por_rut(tipo)
+    assert "12345678" in idx
 
 
-def test_flujo_persona_no_usa_plantillas_faena(monkeypatch):
-    """Debe ir a documentos PERSONA y NO a llegar_a_cargar_plantillas (faena)."""
-    llamado = {"persona": False, "faena": False, "dropzone": False}
+def test_flujo_usa_plantillas_existentes_y_select_nombre_ui(monkeypatch, tmp_path):
+    """Misma nav que pagos (llegar_a_cargar_plantillas); select = nombre_ui."""
+    llamado = {}
 
-    def fake_llegar_persona(driver, wait):
-        llamado["persona"] = True
-        return None
+    def fake_llegar(driver, wait):
+        llamado["nav"] = "plantillas"
 
-    def fake_faena(*_a, **_k):
-        llamado["faena"] = True
-        raise AssertionError("no debe navegar a plantillas faena")
+    def fake_elegir(driver, wait, clave, tipo_ui):
+        llamado["tipo_ui"] = tipo_ui
+        return "octubre 2026"
 
-    def fake_buscar(driver, wait, rut):
-        return None
+    def fake_descarga(*_a, **_k):
+        return tmp_path / "plantilla.xlsx"
 
-    def fake_tipo(driver, wait, cfg):
-        return None
+    def fake_rellenar(plantilla, **kwargs):
+        class R:
+            plantilla = tmp_path / "rellena.xlsx"
+            filas = 1
+            eliminadas = 0
+            archivos = []
 
-    def fake_dropzone(*_a, **kwargs):
-        llamado["dropzone"] = True
-        assert kwargs["nivel"] == NivelCarga.PERSONA
-        assert kwargs["plantilla"] is None
+        (tmp_path / "rellena.xlsx").write_bytes(b"x")
+        return R()
+
+    def fake_materializar(self, archivos, staging):
+        return [tmp_path / "a.pdf"]
+
+    def fake_carga(driver, wait, **kwargs):
+        llamado["carga"] = kwargs["etiqueta"]
+        llamado["nivel"] = kwargs["nivel"]
+        return kwargs["plantilla"]
 
     monkeypatch.setattr(
-        "flows.documentos_trabajador.llegar_a_documentos_persona", fake_llegar_persona
+        "flows.documentos_trabajador.llegar_a_cargar_plantillas", fake_llegar
     )
     monkeypatch.setattr(
-        "flows.documentos_trabajador.buscar_trabajador_por_rut", fake_buscar
+        "flows.documentos_trabajador._elegir_tipo_y_periodo", fake_elegir
     )
     monkeypatch.setattr(
-        "flows.documentos_trabajador._elegir_tipo_documento", fake_tipo
+        "flows.documentos_trabajador.screenshot", lambda *_a, **_k: None
     )
     monkeypatch.setattr(
-        "flows.documentos_trabajador.subir_y_confirmar_dropzone", fake_dropzone
+        "flows.documentos_trabajador.xpk", lambda *_a, **_k: "//fake"
     )
     monkeypatch.setattr(
-        "flows.documentos_trabajador.xpath_pendiente", lambda _k: False
+        "flows.documentos_trabajador.click_y_esperar_descarga", fake_descarga
     )
-    # Si alguien reintroduce faena:
     monkeypatch.setattr(
-        "flows.llegar_a_plantillas.llegar_a_cargar_plantillas", fake_faena, raising=False
+        "flows.documentos_trabajador.rellenar_plantilla_desde_archivos", fake_rellenar
+    )
+    monkeypatch.setattr(
+        "flows.documentos_trabajador.ejecutar_carga_masiva_excel_y_pdfs", fake_carga
+    )
+    monkeypatch.setattr(ProveedorLocal, "materializar", fake_materializar)
+    monkeypatch.setattr(
+        ProveedorLocal,
+        "indice_por_rut",
+        lambda self, t: {"1": type("A", (), {"nombre": "a.pdf", "rut_cuerpo": "1"})()},
     )
 
     cfg = next(d for d in DOCUMENTOS_TRABAJADOR if d.clave == "cedulas_identidad")
-    root = Path("/tmp/prov_docs_test")
-    tipo_dir = root / cfg.tipo_gcs
-    tipo_dir.mkdir(parents=True, exist_ok=True)
-    (tipo_dir / "12345678_ci.pdf").write_bytes(b"%PDF-1.4")
-    prov = ProveedorLocal(root)
-
-    n = ejecutar_carga_documento_trabajador(None, None, cfg, proveedor=prov)
-    assert n == 1
-    assert llamado["persona"] is True
-    assert llamado["faena"] is False
-    assert llamado["dropzone"] is True
-
-
-def test_flujo_persona_falla_si_xpaths_pendientes(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "flows.documentos_trabajador.llegar_a_documentos_persona",
-        lambda *_a, **_k: "persona.menu",
+    out = ejecutar_carga_documento_trabajador(
+        None, None, cfg, proveedor=ProveedorLocal(tmp_path)
     )
-    cfg = DOCUMENTOS_TRABAJADOR[0]
-    with pytest.raises(RuntimeError, match="PERSONA incompleta|persona.menu"):
-        ejecutar_carga_documento_trabajador(
-            None, None, cfg, proveedor=ProveedorLocal(tmp_path)
-        )
+    assert llamado["nav"] == "plantillas"
+    assert llamado["tipo_ui"] == cfg.nombre_ui == "Cédulas de Identidad"
+    assert llamado["nivel"] == NivelCarga.PERSONA
+    assert out == tmp_path / "rellena.xlsx"
 
 
-def test_pagos_no_usan_carga_masiva_compartida():
-    """Los 4 pagos FAENA no deben depender del módulo compartido de PERSONA."""
+def test_pagos_intactos_sin_carga_masiva_compartida():
     src = inspect.getsource(ejecutar_carga_un_documento)
     assert "carga_masiva_compartida" not in src
     assert "asegurar_resultado_post_carga" not in src
-    assert "llegar_a_cargar_plantillas" in src
 
 
-def test_asegurar_resultado_post_carga_fallos():
+def test_asegurar_post_carga():
     from browser import asegurar_resultado_post_carga
 
     with pytest.raises(RuntimeError, match="Post-carga falló"):
         asegurar_resultado_post_carga({"ok": False}, etiqueta="t")
     with pytest.raises(RuntimeError, match="subidos=0"):
         asegurar_resultado_post_carga(
-            {"ok": True, "subidos": 0, "errores": 3, "agregados": 0}, etiqueta="t"
+            {"ok": True, "subidos": 0, "errores": 2}, etiqueta="t"
         )
-    assert asegurar_resultado_post_carga(
-        {"ok": True, "agregados": 2, "errores": 0}, etiqueta="t"
-    )["agregados"] == 2

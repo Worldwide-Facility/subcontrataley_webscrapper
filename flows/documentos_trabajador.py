@@ -1,13 +1,11 @@
-"""Documentos vigentes del trabajador — nivel PERSONA (por RUT).
+"""Documentos vigentes del trabajador — mismo flujo de plantillas que pagos/liq.
 
-Catálogo de 15 tipos (nombres UI exactos) + carga en la sección de
-documentos del trabajador. NO usa Cargas Masivas / plantillas faena
-(`llegar_a_cargar_plantillas` / cmsd_*).
+Navegación y XPaths: idénticos a liquidaciones/pagos (`llegar_a_cargar_plantillas`,
+`liquidaciones.select_tipo`, periodo, plantilla Excel, dropzone cmsd_*).
+Única diferencia: opción del select Documento = `nombre_ui` exacto (15 tipos).
 
-Reutiliza de la carga compartida solo dropzone / verificación / validación /
-'Documentos Agregados' (`flows.carga_masiva_compartida.subir_y_confirmar_dropzone`).
-
-Origen de PDFs: proveedor desacoplado (local|gcs provisional; definitivo pendiente).
+Metadato `NivelCarga.PERSONA` (1 PDF por RUT). Origen de archivos desacoplado
+vía proveedor (local|gcs provisional; definitivo pendiente).
 """
 
 from __future__ import annotations
@@ -19,21 +17,24 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from browser import screenshot, seleccionar_por_texto, xpk
-from config import DOWNLOAD_DIR
-from flows.carga_masiva_compartida import subir_y_confirmar_dropzone
-from flows.llegar_a_documentos_persona import (
-    buscar_trabajador_por_rut,
-    llegar_a_documentos_persona,
-    navegar_a_documentos_persona,
+from browser import (
+    click_y_esperar_descarga,
+    esperar_select_cargado,
+    screenshot,
+    seleccionar_periodo_mes_anterior,
+    seleccionar_por_texto,
+    xpk,
 )
+from config import DOWNLOAD_DIR
+from flows.carga_masiva_compartida import ejecutar_carga_masiva_excel_y_pdfs
+from flows.llegar_a_plantillas import llegar_a_cargar_plantillas
 from flows.nivel_carga import NivelCarga
+from flows.plantilla_schema import GLOB_PLANTILLA
 from flows.proveedor_documentos_trabajador import (
-    ArchivoDocumento,
     ProveedorArchivosTrabajador,
     proveedor_desde_env,
 )
-from xpaths import xpath_pendiente
+from rellenar_plantilla_unico import rellenar_plantilla_desde_archivos
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +44,8 @@ NIVEL = NivelCarga.PERSONA
 @dataclass(frozen=True)
 class DocumentoTrabajador:
     clave: str
-    nombre_ui: str  # texto exacto del tipo de documento en el portal
-    # Clave de tipo para el proveedor (provisional; no implica ruta GCS final)
-    tipo_gcs: str
+    nombre_ui: str  # texto exacto del <select> Documento (liquidaciones.select_tipo)
+    tipo_gcs: str  # clave de tipo para el proveedor (provisional)
     nivel: NivelCarga = NivelCarga.PERSONA
 
 
@@ -131,7 +131,6 @@ DOCUMENTOS_TRABAJADOR: tuple[DocumentoTrabajador, ...] = (
 def seleccionar_documentos(
     claves: Iterable[str] | None = None,
 ) -> tuple[DocumentoTrabajador, ...]:
-    """Filtra el catálogo por claves. None / vacío = los 15."""
     if claves is None:
         return DOCUMENTOS_TRABAJADOR
     pedidas = [c.strip() for c in claves if str(c).strip()]
@@ -156,83 +155,35 @@ def documentos_desde_env(
     return seleccionar_documentos(raw.split(","))
 
 
-def usa_carga_nivel_persona(cfg: DocumentoTrabajador) -> bool:
-    """True si el doc se carga por trabajador (no plantilla faena)."""
-    return cfg.nivel == NivelCarga.PERSONA and cfg.clave in {
-        d.clave for d in DOCUMENTOS_TRABAJADOR
-    }
+def usa_mismo_flujo_plantillas(cfg: DocumentoTrabajador) -> bool:
+    """Los 15 usan el mismo flujo cmsd_*/liquidaciones.*; solo cambia el select."""
+    return cfg.clave in {d.clave for d in DOCUMENTOS_TRABAJADOR}
 
 
 def ejecutar_documento(cfg: DocumentoTrabajador) -> Callable:
-    def ejecutar(driver, wait) -> int:
+    def ejecutar(driver, wait) -> Path:
         return ejecutar_carga_documento_trabajador(driver, wait, cfg)
 
     ejecutar.__name__ = f"ejecutar_{cfg.clave}"
     return ejecutar
 
 
-def _elegir_tipo_documento(driver, wait, cfg: DocumentoTrabajador) -> str | None:
-    key = "persona.select_tipo_documento"
-    if xpath_pendiente(key):
-        logger.warning(
-            "[%s] nivel=%s XPath pendiente: %s (tipo UI='%s')",
-            cfg.clave,
-            NIVEL.value,
-            key,
-            cfg.nombre_ui,
-        )
-        screenshot(driver, f"pendiente_{key.replace('.', '_')}.png")
-        return key
-    seleccionar_por_texto(driver, wait, xpk(driver, key), cfg.nombre_ui)
-    time.sleep(0.5)
-    screenshot(driver, f"{cfg.clave}_tipo.png")
-    return None
-
-
-def _cargar_un_rut(
-    driver,
-    wait,
-    cfg: DocumentoTrabajador,
-    archivo: ArchivoDocumento,
-    path: Path,
-) -> None:
-    """Abre ficha del RUT, elige tipo y sube el PDF con helpers compartidos."""
-    pend = buscar_trabajador_por_rut(driver, wait, archivo.rut_cuerpo)
-    if pend:
-        raise RuntimeError(
-            f"[{cfg.clave}] No se pudo abrir ficha RUT={archivo.rut_cuerpo}: "
-            f"xpath pendiente '{pend}' (nivel={NIVEL.value})"
-        )
-    pend = _elegir_tipo_documento(driver, wait, cfg)
-    if pend:
-        raise RuntimeError(
-            f"[{cfg.clave}] No se pudo elegir tipo '{cfg.nombre_ui}': "
-            f"xpath pendiente '{pend}'"
-        )
-
-    for key in (
-        "persona.zona_upload",
-        "persona.btn_validar",
-        "persona.btn_realizar",
-    ):
-        if xpath_pendiente(key):
-            raise RuntimeError(
-                f"[{cfg.clave}] XPath pendiente para dropzone PERSONA: '{key}'. "
-                "Capturar en el portal (sección documentos del trabajador)."
-            )
-
-    etiqueta = f"{cfg.clave}_{archivo.rut_cuerpo}"
-    subir_y_confirmar_dropzone(
-        driver,
-        wait,
-        etiqueta=etiqueta,
-        paths=[path],
-        nivel=NIVEL,
-        zona_key="persona.zona_upload",
-        btn_validar_key="persona.btn_validar",
-        btn_realizar_key="persona.btn_realizar",
-        plantilla=None,
+def _elegir_tipo_y_periodo(driver, wait, clave: str, tipo_ui: str) -> str:
+    """Mismos selectores que pagos/liquidaciones; `tipo_ui` = opción del select."""
+    logger.info("[%s] Eligiendo tipo (select Documento): %s", clave, tipo_ui)
+    seleccionar_por_texto(
+        driver, wait, xpk(driver, "liquidaciones.select_tipo"), tipo_ui
     )
+    logger.info("[%s] Esperando select de periodo…", clave)
+    esperar_select_cargado(
+        driver, wait, xpk(driver, "liquidaciones.select_periodo"), min_opciones=1
+    )
+    logger.info("[%s] Periodo mes anterior (UI; origen PDF desacoplado)", clave)
+    periodo_ui = seleccionar_periodo_mes_anterior(
+        driver, wait, xpk(driver, "liquidaciones.select_periodo")
+    )
+    time.sleep(1)
+    return periodo_ui
 
 
 def ejecutar_carga_documento_trabajador(
@@ -241,77 +192,69 @@ def ejecutar_carga_documento_trabajador(
     cfg: DocumentoTrabajador,
     *,
     proveedor: ProveedorArchivosTrabajador | None = None,
-) -> int:
+) -> Path:
     """
-    Carga nivel PERSONA: un PDF por RUT en documentos del trabajador.
-    Returns: cantidad de RUTs cargados (0 si solo navegación pendiente).
+    Mismo tronco que pagos 1-doc: plantillas → select tipo=`nombre_ui` →
+    periodo → Excel + PDFs → dropzone → validar → Documentos Agregados.
     """
-    if not usa_carga_nivel_persona(cfg):
-        raise ValueError(
-            f"{cfg.clave} no es carga PERSONA del catálogo (nivel={cfg.nivel})"
-        )
+    if not usa_mismo_flujo_plantillas(cfg):
+        raise ValueError(f"{cfg.clave} no está en el catálogo de 15 docs")
     if cfg.nivel != NivelCarga.PERSONA:
-        raise ValueError(
-            f"{cfg.clave}: nivel={cfg.nivel}; este flujo solo admite PERSONA "
-            "(no usar plantillas faena / cmsd_*)"
-        )
+        raise ValueError(f"{cfg.clave}: se espera nivel=PERSONA, got {cfg.nivel}")
 
     prov = proveedor or proveedor_desde_env()
     logger.info(
-        "[%s] nivel=%s | UI='%s' | tipo=%s | proveedor=%s "
-        "(origen definitivo pendiente; NO faena/plantillas)",
+        "[%s] nivel=%s | mismo flujo plantillas | select='%s' | proveedor=%s",
         cfg.clave,
         NIVEL.value,
         cfg.nombre_ui,
-        cfg.tipo_gcs,
         prov.nombre,
     )
 
-    pend = llegar_a_documentos_persona(driver, wait)
-    if pend:
-        raise RuntimeError(
-            f"[{cfg.clave}] Navegación PERSONA incompleta: xpath pendiente '{pend}'. "
-            "Capturar selectores en xpaths.py (persona.*). "
-            "No usar llegar_a_cargar_plantillas (eso es FAENA)."
-        )
+    llegar_a_cargar_plantillas(driver, wait)
+    periodo_ui = _elegir_tipo_y_periodo(driver, wait, cfg.clave, cfg.nombre_ui)
+    screenshot(driver, f"{cfg.clave}_tipo_periodo.png")
+
+    logger.info("[%s] Descargando plantilla", cfg.clave)
+    plantilla = click_y_esperar_descarga(
+        driver,
+        wait,
+        xpk(driver, "liquidaciones.btn_descargar_plantilla"),
+        glob_pat=GLOB_PLANTILLA,
+    )
+    screenshot(driver, f"{cfg.clave}_plantilla_descargada.png")
 
     docs_idx = prov.indice_por_rut(cfg.tipo_gcs)
-    if not docs_idx:
-        raise ValueError(
-            f"[{cfg.clave}] Proveedor '{prov.nombre}' sin archivos para "
-            f"tipo={cfg.tipo_gcs} (origen pendiente de definición)."
-        )
+    logger.info(
+        "[%s] Rellenando Excel (UI='%s' periodo_ui='%s', proveedor=%s, ruts=%s)",
+        cfg.clave,
+        cfg.nombre_ui,
+        periodo_ui,
+        prov.nombre,
+        len(docs_idx),
+    )
+    resultado = rellenar_plantilla_desde_archivos(
+        plantilla,
+        tipo=cfg.tipo_gcs,
+        docs_idx=docs_idx,
+        etiqueta_origen=f"{prov.nombre}:{cfg.tipo_gcs}",
+    )
+    plantilla = resultado.plantilla
 
-    staging = DOWNLOAD_DIR / f"staging_{cfg.clave}" / "persona" / prov.nombre
-    paths = prov.materializar(list(docs_idx.values()), staging)
-    por_nombre = {p.name: p for p in paths}
+    staging = DOWNLOAD_DIR / f"staging_{cfg.clave}" / prov.nombre
+    logger.info("[%s] Materializando %s PDFs → %s", cfg.clave, resultado.filas, staging)
+    paths = prov.materializar(list(resultado.archivos), staging)
+    resumen = (
+        f"keep={resultado.filas} | elim={resultado.eliminadas} | "
+        f"proveedor={prov.nombre}"
+    )
 
-    ok = 0
-    fallos: list[str] = []
-    for rut, archivo in docs_idx.items():
-        path = por_nombre.get(archivo.nombre)
-        if path is None:
-            fallos.append(rut)
-            logger.error("[%s] Sin path local para RUT=%s (%s)", cfg.clave, rut, archivo.nombre)
-            continue
-        try:
-            _cargar_un_rut(driver, wait, cfg, archivo, path)
-            ok += 1
-        except Exception:
-            fallos.append(rut)
-            logger.exception("[%s] Fallo carga RUT=%s", cfg.clave, rut)
-            try:
-                screenshot(driver, f"error_{cfg.clave}_{rut}.png")
-            except Exception:
-                pass
-            try:
-                navegar_a_documentos_persona(driver, wait)
-            except Exception:
-                pass
-
-    if fallos:
-        raise RuntimeError(
-            f"[{cfg.clave}] nivel={NIVEL.value} fallos={len(fallos)} ok={ok}: {fallos}"
-        )
-    logger.info("[%s] nivel=%s OK ruts=%s", cfg.clave, NIVEL.value, ok)
-    return ok
+    return ejecutar_carga_masiva_excel_y_pdfs(
+        driver,
+        wait,
+        etiqueta=cfg.clave,
+        plantilla=plantilla,
+        paths=paths,
+        nivel=NIVEL,
+        resumen_prep=resumen,
+    )
