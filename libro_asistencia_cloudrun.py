@@ -21,10 +21,10 @@ from __future__ import annotations
 import logging
 import sys
 import time
-import traceback
 
 from browser import iniciar_navegador, screenshot
 from config import DRY_RUN, DOWNLOAD_DIR, HEADLESS, IS_CLOUD_RUN, mascarar, require_credentials
+from errores_operativos import registrar_fallo
 from flows.carga_libro_asistencia import ejecutar
 
 logging.basicConfig(
@@ -55,14 +55,13 @@ def main() -> int:
         if not IS_CLOUD_RUN:
             time.sleep(15)
         return 0
-    except Exception:
-        logger.error("Fallo Libro de Asistencia:\n%s", traceback.format_exc())
+    except Exception as exc:
         if driver is not None:
             try:
                 screenshot(driver, "error_libro_asistencia_cloudrun.png")
             except Exception:
                 pass
-        return 1
+        return registrar_fallo(logger, "Libro de Asistencia", exc)
     finally:
         if driver is not None:
             try:

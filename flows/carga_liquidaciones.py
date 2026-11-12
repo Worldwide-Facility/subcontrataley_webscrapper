@@ -22,6 +22,7 @@ from browser import (
     seleccionar_por_texto,
 )
 from config import DOWNLOAD_DIR
+from errores_operativos import exigir_ok_post_carga
 from flows.llegar_a_plantillas import llegar_a_cargar_plantillas
 from flows.plantilla_schema import GLOB_PLANTILLA
 from gcs_docs import descargar_docs, periodo_gcs_texto
@@ -136,7 +137,12 @@ def ejecutar(driver, wait) -> Path:
     time.sleep(2)
     screenshot(driver, "liquidaciones_despues_post_confirmar.png")
     if not dry_run():
-        esperar_post_carga(driver, etiqueta=NOMBRE, prefijo_shot="liquidaciones", timeout=120)
+        exigir_ok_post_carga(
+            esperar_post_carga(
+                driver, etiqueta=NOMBRE, prefijo_shot="liquidaciones", timeout=120
+            ),
+            etiqueta=NOMBRE,
+        )
 
     logger.info(
         "%s: %s | excel=%s | keep=%s | liq=%s | tr=%s | "
