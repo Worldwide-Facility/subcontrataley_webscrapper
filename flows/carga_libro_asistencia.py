@@ -32,6 +32,7 @@ from browser import (
 )
 from compilar_asistencias import compilar_asistencias_por_faena
 from config import DOWNLOAD_DIR
+from errores_operativos import exigir_ok_post_carga
 from flows.llegar_a_plantillas import (
     llegar_a_cargar_plantillas,
     navegar_a_cargar_plantillas,
@@ -241,8 +242,13 @@ def ejecutar(driver, wait) -> Path:
     time.sleep(3)
     screenshot(driver, "asist_e2e_carga_masiva_click.png")
 
-    # --- 7. Esperar fin y botón post (nunca re-clickea Realizar) ---
-    esperar_post_carga(driver, etiqueta=NOMBRE, prefijo_shot="asist_e2e", timeout=120)
+    # --- 7. Esperar fin (nunca re-clickea Realizar; éxito = Documentos Agregados) ---
+    exigir_ok_post_carga(
+        esperar_post_carga(
+            driver, etiqueta=NOMBRE, prefijo_shot="asist_e2e", timeout=120
+        ),
+        etiqueta=NOMBRE,
+    )
 
     logger.info(
         "[%s] OK | excel=%s | faenas=%s | pdfs=%s | periodo=%s",

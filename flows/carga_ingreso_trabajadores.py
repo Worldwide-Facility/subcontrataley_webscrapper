@@ -145,13 +145,20 @@ def _parse_progreso_carga(body: str) -> dict[str, int | str | None]:
 
 
 def _carga_masiva_terminada(driver) -> bool:
+    """
+    Éxito = apareció 'Trabajadores Agregados' (o mensaje de fin).
+    No depende de pct==100: la barra del portal puede no llegar a 100% (bug).
+    """
     try:
         body = driver.find_element(By.TAG_NAME, "body").text or ""
     except Exception:
         return False
     b = body.lower()
     prog = _parse_progreso_carga(body)
-    if prog["pct"] == 100:
+    # Criterio principal (análogo a 'Documentos Agregados' en cmsd_*).
+    if prog["agregados"] is not None:
+        return True
+    if re.search(r"trabajadores\s+agregados", b, flags=re.I):
         return True
     for frag in (
         "carga masiva finalizada",
@@ -172,7 +179,7 @@ def esperar_carga_masiva(
     *,
     timeout: float | None = None,
 ) -> bool:
-    """Espera progreso 100% / mensaje de fin tras Realizar Carga Masiva."""
+    """Espera 'Trabajadores Agregados' / mensaje de fin tras Realizar Carga Masiva."""
     limite = float(timeout if timeout is not None else CARGA_TIMEOUT)
     t0 = time.time()
     ultimo_log = 0.0
@@ -214,7 +221,10 @@ def ejecutar(
     Login → Crear trabajadores → Subir → Validar → Realizar Carga Masiva.
 
     Returns:
-        Path del Excel subido, o None si faltan XPaths / validación falló.
+        Path del Excel subido, o None si faltan XPaths (exploración).
+    Raises:
+        RuntimeError: validación con errores.
+        TimeoutError: no apareció fin de carga masiva a tiempo.
     """
     excel = _resolver_plantilla(plantilla)
     logger.info("Plantilla a cargar: %s", excel)
@@ -278,12 +288,11 @@ def ejecutar(
     screenshot(driver, "ingreso_despues_enviar.png")
 
     if not _validacion_ok(driver):
-        logger.error(
+        screenshot(driver, "ingreso_validacion_con_errores.png")
+        raise RuntimeError(
             "Validación con errores (no se dispara Carga Masiva). "
             "Revisá debug/ingreso_despues_enviar.png"
         )
-        time.sleep(min(pausa_exploracion, 60))
-        return None
 
     logger.info("Validación OK (0 errores). Realizar Carga Masiva…")
     btn_key = "ingreso.btn_realizar_carga_masiva"
@@ -308,7 +317,9 @@ def ejecutar(
 
     ok = esperar_carga_masiva(driver)
     if not ok:
-        logger.error("Carga masiva no confirmó fin a tiempo.")
-        return None
+        raise TimeoutError(
+            "Carga masiva no confirmó fin a tiempo "
+            "(no apareció 'Trabajadores Agregados' ni mensaje de fin)."
+        )
     logger.info("Carga masiva OK. excel=%s", excel)
     return excel
