@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from flows.llegar_a_plantillas import (
     hacer_login,
+    hacer_logout,
     llegar_a_cargar_plantillas,
     navegar_a_cargar_plantillas,
 )
@@ -98,6 +99,7 @@ FLUJOS_CARGA: dict[str, tuple[str, Callable]] = _FlujosProxy()
 
 __all__ = [
     "hacer_login",
+    "hacer_logout",
     "navegar_a_cargar_plantillas",
     "llegar_a_cargar_plantillas",
     "FLUJOS_CARGA",

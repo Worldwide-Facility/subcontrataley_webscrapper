@@ -4,9 +4,80 @@ from __future__ import annotations
 
 import logging
 import traceback
+from datetime import date
 from typing import Any
 
 from espera_carga import evaluar_agregados_vs_esperado
+
+ESTADO_PERIODO_NO_DISPONIBLE = "periodo_no_disponible"
+
+_MESES_ES = (
+    "",
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
+
+class PeriodoNoDisponible(Exception):
+    """
+    El periodo objetivo no está en el select del portal (completo o no habilitado).
+
+    No es un fallo de ejecución: no se debe subir nada; exit 0 con
+    estado=periodo_no_disponible para que auditor/monitores lo distingan
+    de una carga exitosa.
+    """
+
+    estado = ESTADO_PERIODO_NO_DISPONIBLE
+
+    def __init__(
+        self,
+        periodo: date,
+        tipo: str = "",
+        opciones: list[str] | None = None,
+    ):
+        self.periodo = periodo
+        self.tipo = (tipo or "").strip() or "documento"
+        self.opciones = list(opciones or [])
+        mes_anio = f"{_MESES_ES[periodo.month].capitalize()} {periodo.year}"
+        super().__init__(
+            f"Período {mes_anio} no disponible en el portal para {self.tipo} "
+            f"(completo o no habilitado); no se sube nada"
+        )
+
+
+def registrar_periodo_no_disponible(
+    logger: logging.Logger,
+    exc: PeriodoNoDisponible,
+    driver=None,
+) -> int:
+    """Log explícito + logout best-effort; exit 0 (sin pendientes de carga)."""
+    logger.info("%s | estado=%s", exc, exc.estado)
+    if exc.opciones:
+        logger.info(
+            "Opciones del select de periodo: %s",
+            exc.opciones,
+        )
+    if driver is not None:
+        try:
+            from flows.llegar_a_plantillas import hacer_logout
+
+            hacer_logout(driver)
+        except Exception as logout_exc:
+            logger.warning(
+                "Logout no pudo completarse tras periodo no disponible: %s",
+                logout_exc,
+            )
+    return 0
 
 
 def exigir_ok_post_carga(
@@ -96,11 +167,14 @@ def es_error_operativo(exc: BaseException) -> bool:
     msg = str(exc)
     if isinstance(exc, FileNotFoundError):
         return "No hay PDFs" in msg and "para periodo" in msg
+    if isinstance(exc, PeriodoNoDisponible):
+        # No es error operativo: se maneja con exit 0 (registrar_periodo_no_disponible).
+        return False
     if isinstance(exc, ValueError):
         if "Ningún RUT tiene" in msg:
             return True
-        if "El portal no ofrece el periodo" in msg:
-            return True
+        # Select vacío/roto = error de página (exit != 0). Periodo ausente
+        # entre opciones válidas ya no llega aquí (PeriodoNoDisponible).
         if "Select de periodo sin opciones útiles" in msg:
             return True
     if isinstance(exc, TimeoutError):

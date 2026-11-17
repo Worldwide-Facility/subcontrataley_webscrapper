@@ -16,7 +16,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from browser import click_xpath, escribir_xpath, screenshot, click_clave_si_existe, xpk
 from config import require_credentials
-from xpaths import LOGIN_URL
+from xpaths import LOGIN_URL, LOGOUT_URL
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,23 @@ def hacer_login(driver, wait) -> None:
     screenshot(driver, "post_login.png")
 
     cerrar_modales_post_login(driver, wait)
+
+
+def hacer_logout(driver) -> None:
+    """Cierra sesión en el portal (best-effort; no debe tumbar el flujo)."""
+    logger.info("Cerrando sesión: %s", LOGOUT_URL)
+    driver.get(LOGOUT_URL)
+    try:
+        WebDriverWait(driver, 10).until(
+            lambda d: "login.php" in (d.current_url or "")
+            or "logout" in (d.current_url or "")
+        )
+    except TimeoutException:
+        logger.warning(
+            "Logout: no se confirmó redirección (url=%s)",
+            getattr(driver, "current_url", "?"),
+        )
+    logger.info("Sesión cerrada (url=%s)", getattr(driver, "current_url", "?"))
 
 
 def navegar_a_cargar_plantillas(driver, wait) -> None:

@@ -15,6 +15,7 @@ import traceback
 
 from browser import iniciar_navegador, screenshot
 from config import DRY_RUN, DOWNLOAD_DIR, HEADLESS, IS_CLOUD_RUN, mascarar, require_credentials
+from errores_operativos import PeriodoNoDisponible, registrar_periodo_no_disponible
 from flows.documentos_trabajador import (
     DOCUMENTOS_TRABAJADOR,
     documentos_desde_env,
@@ -58,6 +59,7 @@ def main() -> int:
     try:
         proveedor = proveedor_desde_env()
         driver, wait = iniciar_navegador(headless=True if IS_CLOUD_RUN else None)
+        omitidos_periodo: list[str] = []
         for cfg in docs:
             logger.info("--- Inicio %s (%s) ---", cfg.clave, cfg.nombre_ui)
             try:
@@ -70,6 +72,10 @@ def main() -> int:
                     plantilla,
                     cfg.nombre_ui,
                 )
+            except PeriodoNoDisponible as exc:
+                # Sin pendientes para ese tipo: no cuenta como fallo.
+                registrar_periodo_no_disponible(logger, exc, driver=None)
+                omitidos_periodo.append(cfg.clave)
             except Exception:
                 logger.error(
                     "Fallo documento %s:\n%s", cfg.clave, traceback.format_exc()
@@ -83,6 +89,13 @@ def main() -> int:
         if fallos:
             logger.error("Documentos con error (%s): %s", len(fallos), fallos)
             return 1
+        if omitidos_periodo:
+            logger.info(
+                "Documentos omitidos por periodo no disponible (%s): %s | estado=%s",
+                len(omitidos_periodo),
+                omitidos_periodo,
+                "periodo_no_disponible",
+            )
         logger.info("OK fin de flujo. documentos=%s", len(docs))
         if not IS_CLOUD_RUN:
             time.sleep(15)

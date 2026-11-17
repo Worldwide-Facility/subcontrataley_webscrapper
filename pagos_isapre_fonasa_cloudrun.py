@@ -9,7 +9,11 @@ import time
 
 from browser import iniciar_navegador, screenshot
 from config import DRY_RUN, DOWNLOAD_DIR, HEADLESS, IS_CLOUD_RUN, mascarar, require_credentials
-from errores_operativos import registrar_fallo
+from errores_operativos import (
+    PeriodoNoDisponible,
+    registrar_fallo,
+    registrar_periodo_no_disponible,
+)
 from flows.carga_pagos_isapre_fonasa import ejecutar
 
 logging.basicConfig(
@@ -39,6 +43,8 @@ def main() -> int:
         if not IS_CLOUD_RUN:
             time.sleep(15)
         return 0
+    except PeriodoNoDisponible as exc:
+        return registrar_periodo_no_disponible(logger, exc, driver)
     except Exception as exc:
         if driver is not None:
             try:

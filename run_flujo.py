@@ -20,7 +20,11 @@ import time
 
 from browser import iniciar_navegador, screenshot
 from config import DRY_RUN
-from errores_operativos import es_error_operativo
+from errores_operativos import (
+    PeriodoNoDisponible,
+    es_error_operativo,
+    registrar_periodo_no_disponible,
+)
 from flows import FLUJOS_CARGA
 
 logging.basicConfig(
@@ -58,6 +62,8 @@ def main() -> int:
         logger.info("Flujo '%s' terminó. Navegador abierto 60s.", nombre)
         time.sleep(60)
         return 0
+    except PeriodoNoDisponible as exc:
+        return registrar_periodo_no_disponible(logger, exc, driver)
     except Exception as exc:
         screenshot(driver, f"error_{args.flujo}.png")
         if es_error_operativo(exc):

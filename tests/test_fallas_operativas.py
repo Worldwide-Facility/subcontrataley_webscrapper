@@ -10,10 +10,14 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from datetime import date  # noqa: E402
+
 from errores_operativos import (  # noqa: E402
+    PeriodoNoDisponible,
     es_error_operativo,
     exigir_ok_post_carga,
     registrar_fallo,
+    registrar_periodo_no_disponible,
 )
 from flows import carga_ingreso_trabajadores as ingreso  # noqa: E402
 
@@ -41,12 +45,15 @@ class TestErroresOperativos(unittest.TestCase):
         )
         self.assertTrue(es_error_operativo(exc))
 
-    def test_value_error_periodo_portal(self):
-        exc = ValueError(
-            "El portal no ofrece el periodo 2026-08 en //select[@id='cmsd_periodos']; "
-            "opciones: ['Jul 2026']"
-        )
+    def test_select_periodo_vacio_es_operativo(self):
+        exc = ValueError("Select de periodo sin opciones útiles: //select[@id='cmsd_periodos']")
         self.assertTrue(es_error_operativo(exc))
+
+    def test_periodo_no_disponible_no_es_error_operativo(self):
+        exc = PeriodoNoDisponible(date(2026, 10, 1), tipo="Liquidaciones de Sueldo")
+        self.assertFalse(es_error_operativo(exc))
+        log = MagicMock(spec=logging.Logger)
+        self.assertEqual(registrar_periodo_no_disponible(log, exc, driver=None), 0)
 
     def test_otros_errores_no_son_operativos(self):
         self.assertFalse(es_error_operativo(RuntimeError("boom")))

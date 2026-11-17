@@ -85,9 +85,11 @@ def _elegir_tipo_y_periodo(
     )
     logger.info("[%s] Periodo mes anterior", clave)
     periodo_ui = seleccionar_periodo_mes_anterior(
-        driver, wait, xpk(driver, "liquidaciones.select_periodo"), referencia=referencia,
-        # Cotizaciones: el periodo debe coincidir con el de los PDF (sin fallback)
-        estricto=referencia is not None,
+        driver,
+        wait,
+        xpk(driver, "liquidaciones.select_periodo"),
+        referencia=referencia,
+        tipo=tipo or clave,
     )
     time.sleep(1)
     return periodo_ui

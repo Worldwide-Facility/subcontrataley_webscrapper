@@ -9,6 +9,7 @@ Prefijos:
 """
 
 LOGIN_URL = "https://www5.subcontrataley.cl/login.php"
+LOGOUT_URL = "https://www5.subcontrataley.cl/logout.php"
 
 # None = pendiente de captura (el flujo llega al tronco y avisa)
 XPATHS = {
