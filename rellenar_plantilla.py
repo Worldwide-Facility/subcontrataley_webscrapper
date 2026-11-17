@@ -41,7 +41,8 @@ class ResultadoRelleno:
     plantilla: Path
     periodo_gcs: str
     filas_originales: int = 0
-    filas: int = 0  # filas que quedan (completas o líquido 0)
+    filas: int = 0  # filas que quedan (completas o líquido 0; puede > RUT únicos)
+    ruts_unicos: int = 0  # RUT distintos entre las filas que se mantienen
     eliminadas: int = 0
     liquido_cero: int = 0
     ruts_eliminados: list[str] = field(default_factory=list)
@@ -183,17 +184,22 @@ def rellenar_plantilla_liquidaciones(
         ws.delete_rows(row, 1)
 
     res.eliminadas = len(res.ruts_eliminados)
-    res.filas = len([x for x in a_mantener if x[2] is not None])
+    mantenidos = [x for x in a_mantener if x[2] is not None]
+    res.filas = len(mantenidos)
+    res.ruts_unicos = len({rut_cuerpo(str(rut)) for _row, rut, _liq, _tr in mantenidos})
 
     dest = guardar_como or plantilla
     wb.save(dest)
     res.plantilla = dest
 
     logger.info(
-        "Plantilla periodo=%s | orig=%s | keep=%s (liq0=%s) | elim=%s → %s",
+        "Plantilla periodo=%s | orig=%s | keep=%s ruts_unicos=%s pdfs_liq=%s "
+        "(liq0=%s) | elim=%s → %s",
         periodo,
         res.filas_originales,
         res.filas,
+        res.ruts_unicos,
+        len(res.docs_liquidacion),
         res.liquido_cero,
         res.eliminadas,
         dest,

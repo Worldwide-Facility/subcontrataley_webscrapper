@@ -23,6 +23,7 @@ from browser import (
 )
 from config import DOWNLOAD_DIR
 from errores_operativos import exigir_ok_post_carga
+from espera_carga import calcular_esperado_post_carga
 from flows.llegar_a_plantillas import llegar_a_cargar_plantillas
 from flows.plantilla_schema import GLOB_PLANTILLA
 from gcs_docs import descargar_docs, periodo_gcs_texto
@@ -84,17 +85,28 @@ def ejecutar(driver, wait) -> Path:
         periodo_gcs=periodo_gcs,
     )
     plantilla = resultado.plantilla
-    # esperado post-carga = filas de plantilla (docs principales), NO liq+tr.
-    esperado_docs = int(resultado.filas)
-    logger.info(
-        "Descargando PDFs solo de RUTs completos (%s filas → esperado "
-        "Documentos Agregados=%s) → %s",
-        resultado.filas,
-        esperado_docs,
-        staging,
-    )
     paths_liq = descargar_docs(resultado.docs_liquidacion, staging / "liquidaciones")
     paths_tr = descargar_docs(resultado.docs_transferencia, staging / "transferencias")
+    # minimo_razonable = min(filas, PDFs únicos, RUT únicos). NO usar solo filas:
+    # un RUT duplicado en plantilla (109 filas, 108 PDFs) no debe exigir 109.
+    esp = calcular_esperado_post_carga(
+        filas_plantilla=int(resultado.filas),
+        pdfs_principales_unicos=len(paths_liq),
+        ruts_unicos=int(resultado.ruts_unicos),
+    )
+    esperado_docs = int(esp["minimo_razonable"])
+    filas_plantilla = int(esp["filas_plantilla"])
+    logger.info(
+        "PDFs listos | filas=%s ruts_unicos=%s pdfs_liq=%s tr=%s → "
+        "minimo_razonable Documentos Agregados=%s (%s) | staging=%s",
+        resultado.filas,
+        resultado.ruts_unicos,
+        len(paths_liq),
+        len(paths_tr),
+        esperado_docs,
+        esp["criterio"],
+        staging,
+    )
 
     logger.info("Ir a pantalla de carga")
     click_xpath(driver, wait, xpk(driver, "liquidaciones.ir_a_cargar"))
@@ -150,18 +162,21 @@ def ejecutar(driver, wait) -> Path:
                 etiqueta=NOMBRE,
                 prefijo_shot="liquidaciones",
                 esperado=esperado_docs,
+                filas_plantilla=filas_plantilla,
             ),
             etiqueta=NOMBRE,
             esperado=esperado_docs,
+            filas_plantilla=filas_plantilla,
         )
 
     logger.info(
-        "%s: %s | excel=%s | keep=%s | esperado_docs=%s | liq=%s | tr=%s | "
-        "liquido0=%s | eliminados=%s",
+        "%s: %s | excel=%s | keep=%s | ruts_unicos=%s | minimo_razonable=%s | "
+        "liq=%s | tr=%s | liquido0=%s | eliminados=%s",
         NOMBRE,
         "DRY_RUN: carga NO enviada" if dry_run() else "carga enviada",
         plantilla.name,
         resultado.filas,
+        resultado.ruts_unicos,
         esperado_docs,
         len(paths_liq),
         len(paths_tr),

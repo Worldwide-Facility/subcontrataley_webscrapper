@@ -592,7 +592,10 @@ def subir_archivo(driver, wait: WebDriverWait, xpath: str, ruta: Path) -> None:
 def _estado_zona_upload(driver, zona_xpath: str) -> dict:
     """
     Inspecciona la zona de documentos (Dropzone Subcontrataley / template cards).
-    Cuenta .card con dz-* o filas .pdf en el texto (no solo .dz-preview clásico).
+
+    Cuenta SOLO archivos reales (preview con nombre + extensión). Placeholders,
+    avisos ("Arrastre aquí…") y cards vacías NO entran en `items`/`names`
+    (bug 17-nov rbldp: base=1 con zona vacía → n_min=109 con 108 PDFs).
     """
     return driver.execute_script(
         """
@@ -601,44 +604,76 @@ def _estado_zona_upload(driver, zona_xpath: str) -> dict:
             xpath, document, null,
             XPathResult.FIRST_ORDERED_NODE_TYPE, null
         ).singleNodeValue;
-        if (!zona) return {items: 0, processing: 0, progress: 0, ready: false};
+        if (!zona) return {items: 0, processing: 0, progress: 0, complete: 0,
+                          errors: 0, names: [], ready: false};
 
         const root = (zona.closest && zona.closest('.dropzone')) || zona;
+        const reExt = /\\.[A-Za-z0-9]{2,5}$/;
+        const rePh = /arrastr|suelte|drop\\s*files|seleccion|haga\\s*click|sin\\s*archivos|placeholder|aqui|aquí|browse|elegir\\s*archivo|no\\s*hay\\s*document/i;
 
-        // UI Subcontrataley: cada archivo es .card con clases dz-*
-        let cards = root.querySelectorAll(
-            '.card.dz-success, .card.dz-complete, .card.dz-processing, .card.dz-error'
-        );
-        if (!cards.length) {
-            cards = root.querySelectorAll('.dz-preview, .dz-file-preview');
-        }
-        if (!cards.length) {
-            cards = root.querySelectorAll('.card.mt-1');
-        }
-        let items = cards.length;
-        if (!items) {
-            const texts = (root.innerText || '').split(/\\n+/).filter(t => /\\.pdf/i.test(t));
-            items = texts.length;
+        const nombreDe = (el) => {
+            const n = el.querySelector('[data-dz-name], .dz-filename span, .dz-filename');
+            let name = n ? (n.textContent || '').trim() : '';
+            if (!name) {
+                const t = (el.innerText || '').trim().split(/\\n+/)[0] || '';
+                name = t.trim();
+            }
+            return name;
+        };
+        const esReal = (name) => !!(name && reExt.test(name) && !rePh.test(name));
+
+        // Preferir previews Dropzone con estado; nunca .card.mt-1 genérico
+        // (ahí vivía el placeholder que inflaba la base).
+        let cards = [...root.querySelectorAll(
+            '.card.dz-success, .card.dz-complete, .card.dz-processing, .card.dz-error, '
+            + '.dz-preview, .dz-file-preview'
+        )];
+        // Dedup
+        cards = cards.filter((c, i, a) => a.indexOf(c) === i);
+
+        const files = [];
+        cards.forEach(el => {
+            const name = nombreDe(el);
+            if (!esReal(name)) return;
+            const cl = el.classList;
+            files.push({
+                name,
+                success: cl.contains('dz-success') || cl.contains('dz-complete'),
+                processing: cl.contains('dz-processing') && !cl.contains('dz-success')
+                            && !cl.contains('dz-complete') && !cl.contains('dz-error'),
+                error: cl.contains('dz-error'),
+            });
+        });
+
+        // Fallback: líneas .pdf en texto solo si no hubo previews estructurales
+        if (!files.length) {
+            const texts = (root.innerText || '').split(/\\n+/)
+                .map(t => t.trim())
+                .filter(t => esReal(t));
+            texts.forEach(name => files.push({
+                name, success: true, processing: false, error: false
+            }));
         }
 
-        const processing = root.querySelectorAll(
-            '.dz-processing:not(.dz-success):not(.dz-complete), .dz-uploading, .uploading'
-        ).length;
+        const names = [...new Set(files.map(f => f.name))];
+        const items = names.length;
+        const processing = files.filter(f => f.processing).length;
+        const errors = files.filter(f => f.error).length;
+        const complete = files.filter(f => f.success && !f.error).length;
 
         let progress = 0;
         root.querySelectorAll('.progress-bar, .dz-upload, progress').forEach(el => {
+            // Solo barras dentro de previews de archivo real
+            const host = el.closest(
+                '.dz-preview, .dz-file-preview, .card.dz-processing, '
+                + '.card.dz-success, .card.dz-complete, .card.dz-error'
+            );
+            if (!host) return;
+            if (!esReal(nombreDe(host))) return;
             const styleW = (el.style && el.style.width) ? parseFloat(el.style.width) : NaN;
             const w = !isNaN(styleW) ? styleW : parseFloat(el.getAttribute('aria-valuenow') || 'NaN');
             if (!isNaN(w) && w < 99.5) progress += 1;
-            else if (isNaN(w) && el.offsetParent !== null && el.classList.contains('progress-bar')) {
-                // barra sin ancho numérico: no asumir incompleto si ya hay success
-            }
         });
-
-        const errors = root.querySelectorAll('.dz-error, .qq-upload-fail').length;
-        const complete = root.querySelectorAll(
-            '.card.dz-success, .card.dz-complete, .dz-success, .dz-complete'
-        ).length;
 
         return {
             items: items,
@@ -646,7 +681,8 @@ def _estado_zona_upload(driver, zona_xpath: str) -> dict:
             progress: progress,
             complete: complete,
             errors: errors,
-            ready: progress === 0 && items > 0,
+            names: names,
+            ready: progress === 0 && processing === 0 && items > 0 && errors === 0,
         };
         """,
         zona_xpath,
@@ -658,17 +694,21 @@ def esperar_uploads_completos(
     zona_xpath: str,
     *,
     n_min: int | None = None,
+    nombres_esperados: list[str] | None = None,
     timeout: float | None = None,
     estable_s: float | None = None,
 ) -> dict:
     """
-    Espera a que terminen las subidas en la zona (sin spinners/progreso).
-    Si n_min, exige al menos esa cantidad de items. Timeout por defecto
-    proporcional a n_min (UPLOAD_TIMEOUT_BASE_S + N×UPLOAD_TIMEOUT_PER_FILE_S).
+    Espera a que terminen las subidas (sin spinners/progreso).
+
+    Preferente: `nombres_esperados` → todos listos (o listos >= N) y 0 en proceso.
+    Si hay errores en esos nombres → RuntimeError con la lista.
+    Fallback: `n_min` sobre conteo de archivos REALES (sin placeholders).
     """
+    n_ref = len(list(dict.fromkeys(nombres_esperados or []))) or (n_min or 0)
     if timeout is None:
         timeout = timeout_upload_s(
-            n_min or 0,
+            n_ref,
             base_s=UPLOAD_TIMEOUT_BASE_S,
             per_file_s=UPLOAD_TIMEOUT_PER_FILE_S,
             minimo_s=UPLOAD_TIMEOUT_MIN_S,
@@ -680,23 +720,39 @@ def esperar_uploads_completos(
     last_log = 0.0
     estable_desde: float | None = None
     ultimo: dict = {}
+    ultimo_cmp: dict = {}
 
     while time.time() - t0 < timeout:
         ultimo = _estado_zona_upload(driver, zona_xpath) or {}
-        ready = zona_upload_lista(ultimo, n_min=n_min)
+        ready = False
+        if nombres_esperados is not None:
+            vis = leer_archivos_dropzone(driver, zona_xpath)
+            ultimo_cmp = dropzone_carga_completa(vis, nombres_esperados)
+            if ultimo_cmp.get("con_error"):
+                shot = screenshot(
+                    driver, "dropzone_errores_upload.png"
+                )
+                raise RuntimeError(
+                    f"Errores en dropzone (no se pulsa Carga Masiva): "
+                    f"con_error={ultimo_cmp['con_error']} screenshot={shot}"
+                )
+            ready = bool(ultimo_cmp.get("ok"))
+        else:
+            ready = zona_upload_lista(ultimo, n_min=n_min)
 
         if ready:
             if estable_desde is None:
                 estable_desde = time.time()
             elif time.time() - estable_desde >= estable_s:
                 logger.info(
-                    "Uploads OK zona=%s items=%s complete=%s (%.0fs)",
+                    "Uploads OK zona=%s items=%s complete=%s listos=%s (%.0fs)",
                     zona_xpath,
                     ultimo.get("items"),
                     ultimo.get("complete"),
+                    (ultimo_cmp or {}).get("listos"),
                     time.time() - t0,
                 )
-                return ultimo
+                return dict(ultimo, comparacion=ultimo_cmp or None)
         else:
             estable_desde = None
 
@@ -704,12 +760,14 @@ def esperar_uploads_completos(
         if now - last_log >= 5:
             logger.info(
                 "Esperando uploads… items=%s processing=%s progress=%s "
-                "complete=%s n_min=%s (%.0fs/%.0fs)",
+                "complete=%s errors=%s n_min=%s faltan=%s (%.0fs/%.0fs)",
                 ultimo.get("items"),
                 ultimo.get("processing"),
                 ultimo.get("progress"),
                 ultimo.get("complete"),
+                ultimo.get("errors"),
                 n_min,
+                (ultimo_cmp or {}).get("faltan"),
                 now - t0,
                 timeout,
             )
@@ -718,7 +776,8 @@ def esperar_uploads_completos(
 
     raise TimeoutError(
         f"Timeout {timeout:.0f}s esperando uploads en {zona_xpath} "
-        f"(n_min={n_min}). Último estado={ultimo}"
+        f"(n_min={n_min}, nombres={n_ref}). Último estado={ultimo} "
+        f"comparacion={ultimo_cmp}"
     )
 
 
@@ -749,7 +808,10 @@ def subir_archivos(
         _dry_run_destino_archivos(driver, xpath, paths)
         return
 
-    base = int((_estado_zona_upload(driver, xpath) or {}).get("items") or 0)
+    # base = solo archivos REALES ya presentes (placeholders no cuentan).
+    st0 = _estado_zona_upload(driver, xpath) or {}
+    base = int(st0.get("items") or 0)
+    nombres_lote = [Path(p).name for p in paths]
     timeout_total = timeout_upload_s(
         len(paths),
         base_s=UPLOAD_TIMEOUT_BASE_S,
@@ -760,6 +822,12 @@ def subir_archivos(
         # El caller puede pedir más (nunca menos que el proporcional).
         timeout_total = max(float(timeout), timeout_total)
     por_archivo = max(30.0, UPLOAD_TIMEOUT_PER_FILE_S * 4)
+    logger.info(
+        "Dropzone base real=%s (names=%s); se enviarán %s archivo(s)",
+        base,
+        (st0.get("names") or [])[:3],
+        len(paths),
+    )
 
     if uno_a_uno:
         for i, path in enumerate(paths, start=1):
@@ -783,7 +851,11 @@ def subir_archivos(
             while time.time() - t0 < por_archivo:
                 st = _estado_zona_upload(driver, xpath) or {}
                 items = int(st.get("items") or 0)
-                # Nombre visible en la zona (más fiable que solo el contador)
+                names = set(st.get("names") or [])
+                # Éxito por nombre visible (preferido) o conteo real >= objetivo
+                if path.name in names:
+                    ok = True
+                    break
                 visible = driver.execute_script(
                     """
                     const xp = arguments[0], name = arguments[1];
@@ -801,29 +873,29 @@ def subir_archivos(
                 if visible and items >= objetivo:
                     ok = True
                     break
-                if visible and items >= i:  # tolerar base distinto
+                if visible and items >= i:
                     ok = True
                     break
                 time.sleep(0.35)
             if not ok:
                 logger.warning(
-                    "PDF %s no confirmado a tiempo (objetivo items=%s)",
+                    "PDF %s no confirmado a tiempo (objetivo items reales=%s)",
                     path.name,
                     objetivo,
                 )
             else:
-                # estabilizar barras un momento
                 time.sleep(0.4)
-        # Espera final global: todos cargados, sin progreso pendiente
+        # Espera final: todos los NOMBRES enviados listos (no base+N con placeholder)
         if esperar:
             esperar_uploads_completos(
                 driver,
                 xpath,
                 n_min=base + len(paths),
+                nombres_esperados=nombres_lote,
                 timeout=timeout_total,
             )
         logger.info(
-            "Enviados %s archivo(s) uno-a-uno (base=%s) a %s",
+            "Enviados %s archivo(s) uno-a-uno (base_real=%s) a %s",
             len(paths),
             base,
             xpath,
@@ -836,7 +908,11 @@ def subir_archivos(
     logger.info("Enviados %s archivo(s) multi a %s", len(paths), xpath)
     if esperar:
         esperar_uploads_completos(
-            driver, xpath, n_min=base + len(paths), timeout=timeout_total
+            driver,
+            xpath,
+            n_min=base + len(paths),
+            nombres_esperados=nombres_lote,
+            timeout=timeout_total,
         )
 
 
@@ -1191,23 +1267,20 @@ def esperar_post_carga(
     prefijo_shot: str = "carga",
     timeout: float | None = None,
     esperado: int | None = None,
+    filas_plantilla: int | None = None,
     estable_s: float | None = None,
     log_cada_s: float | None = None,
 ) -> dict:
     """
     Tras el ÚNICO click en 'Realizar Carga Masiva'.
 
-    NO trata la primera aparición de 'Documentos Agregados' como fin (bug real
-    17-nov: el contador avanzaba mientras seguía 'Se esta realizando la carga
-    masiva' y al cerrar el navegador quedaron filas sin subir).
+    Espera a que desaparezca 'Se esta realizando la carga masiva' y que el
+    contador se estabilice o alcance `esperado` (mínimo razonable =
+    min(filas, PDFs únicos[, RUT únicos])).
 
-    Espera a que:
-      1) desaparezca el mensaje en curso, y
-      2) Documentos Agregados >= `esperado` (filas de plantilla / docs
-         principales) O el contador se estabilice `estable_s` segundos.
-
-    La barra al 100% NUNCA es criterio (bug del portal: no llega).
-    Timeout amplio: POST_CARGA_TIMEOUT_S (default 3600s).
+    Si al estabilizar Agregados < filas_plantilla pero >= esperado → WARNING
+    (p.ej. RUT duplicado) y ok. Si Agregados < esperado → fallo.
+    La barra al 100% NUNCA es criterio.
     """
     limite = float(POST_CARGA_TIMEOUT_S if timeout is None else timeout)
     est_s = float(POST_CARGA_ESTABLE_S if estable_s is None else estable_s)
@@ -1220,9 +1293,10 @@ def esperar_post_carga(
     raw: dict = {}
 
     logger.info(
-        "[%s] Esperando fin real de carga masiva (esperado=%s estable=%.0fs "
-        "timeout=%.0fs; criterio_esperado=filas_plantilla_docs_principales)",
-        etiqueta, esperado, est_s, limite,
+        "[%s] Esperando fin real de carga masiva (minimo_razonable=%s "
+        "filas_plantilla=%s estable=%.0fs timeout=%.0fs; "
+        "criterio=min(filas,pdfs_unicos[,ruts_unicos]))",
+        etiqueta, esperado, filas_plantilla, est_s, limite,
     )
 
     while time.time() - t0 < limite:
@@ -1245,16 +1319,18 @@ def esperar_post_carga(
             ahora=ahora,
             esperado=esperado,
             estable_s=est_s,
+            filas_plantilla=filas_plantilla,
         )
         estado = decision.estado
 
         if ahora - last_log >= log_s or decision.terminado:
             logger.info(
-                "[%s] Post-carga: Documentos Agregados=%s esperado=%s "
-                "en_curso=%s motivo=%s (%.0fs)",
+                "[%s] Post-carga: Documentos Agregados=%s minimo=%s "
+                "filas=%s en_curso=%s motivo=%s (%.0fs)",
                 etiqueta,
                 lectura.agregados,
                 esperado,
+                filas_plantilla,
                 lectura.en_curso,
                 decision.motivo,
                 ahora - t0,
@@ -1264,12 +1340,27 @@ def esperar_post_carga(
         if decision.terminado:
             screenshot(driver, f"{prefijo_shot}_post_carga.png")
             resumen = resumen_desde_decision(
-                lectura, decision, esperado=esperado, elapsed_s=ahora - t0
+                lectura,
+                decision,
+                esperado=esperado,
+                elapsed_s=ahora - t0,
+                filas_plantilla=filas_plantilla,
             )
+            if decision.warning:
+                logger.warning(
+                    "[%s] Post-carga: Documentos Agregados=%s < filas_plantilla=%s "
+                    "pero >= minimo_razonable=%s (posible RUT/fila duplicada). "
+                    "motivo=%s",
+                    etiqueta,
+                    resumen.get("agregados"),
+                    filas_plantilla,
+                    esperado,
+                    resumen.get("motivo"),
+                )
             if decision.ok:
                 logger.info(
                     "[%s] Carga masiva terminada: Documentos Agregados=%s "
-                    "esperado=%s subidos=%s errores=%s | %s (%.0fs)",
+                    "minimo=%s subidos=%s errores=%s | %s (%.0fs)",
                     etiqueta,
                     resumen.get("agregados"),
                     esperado,
@@ -1281,7 +1372,7 @@ def esperar_post_carga(
             else:
                 logger.error(
                     "[%s] Carga masiva incompleta: Documentos Agregados=%s "
-                    "< esperado=%s (motivo=%s, %.0fs)",
+                    "< minimo_razonable=%s (motivo=%s, %.0fs)",
                     etiqueta,
                     resumen.get("agregados"),
                     esperado,
@@ -1295,21 +1386,24 @@ def esperar_post_carga(
     screenshot(driver, f"{prefijo_shot}_sin_progreso_post_carga.png")
     logger.warning(
         "[%s] Timeout %.0fs esperando fin de carga masiva "
-        "(agregados=%s esperado=%s en_curso=%s)",
+        "(agregados=%s minimo=%s en_curso=%s)",
         etiqueta, limite, lectura.agregados, esperado, lectura.en_curso,
     )
     return {
         "ok": False,
+        "warning": False,
         "agregados": lectura.agregados,
         "subidos": lectura.subidos,
         "errores": lectura.errores,
         "modals": lectura.modals,
         "en_curso": lectura.en_curso,
         "esperado": esperado,
+        "minimo_razonable": esperado,
+        "filas_plantilla": filas_plantilla,
         "motivo": "timeout",
         "elapsed_s": time.time() - t0,
         "criterio_esperado": (
-            "filas_plantilla_docs_principales"
+            "min(filas_plantilla, pdfs_unicos[, ruts_unicos])"
             if esperado is not None
             else "estabilizacion_sin_esperado"
         ),
@@ -1317,43 +1411,24 @@ def esperar_post_carga(
 
 
 def asegurar_resultado_post_carga(
-    resumen: dict, *, etiqueta: str = "carga", esperado: int | None = None
+    resumen: dict,
+    *,
+    etiqueta: str = "carga",
+    esperado: int | None = None,
+    filas_plantilla: int | None = None,
 ) -> dict:
     """
-    Falla la carga si el portal no mostró fin real, si quedó bajo el esperado,
-    o si subidos==0 con errores>0. `subidos` cae a `agregados` si el portal
-    no lo muestra. `esperado` = filas de plantilla (docs principales).
+    Falla si no terminó o si Agregados < minimo_razonable (`esperado`).
+    Si Agregados < filas_plantilla pero >= minimo → solo WARNING.
     """
-    exp = esperado if esperado is not None else resumen.get("esperado")
-    if not resumen.get("ok"):
-        agg = resumen.get("agregados")
-        if exp is not None and agg is not None and int(agg) < int(exp):
-            raise RuntimeError(
-                f"[{etiqueta}] Post-carga incompleta: Documentos Agregados={agg} "
-                f"< esperado={exp} (filas de plantilla / docs principales; "
-                f"no se usa la barra al 100%). resumen={resumen}"
-            )
-        raise RuntimeError(
-            f"[{etiqueta}] Post-carga falló (no terminó la carga masiva / "
-            f"no apareció 'Documentos Agregados' estable): {resumen}"
-        )
-    if exp is not None:
-        agg = resumen.get("agregados")
-        if agg is None or int(agg) < int(exp):
-            raise RuntimeError(
-                f"[{etiqueta}] Post-carga incompleta: Documentos Agregados={agg} "
-                f"< esperado={exp} (filas de plantilla / docs principales). "
-                f"resumen={resumen}"
-            )
-    subidos = resumen.get("subidos")
-    if subidos is None:
-        subidos = resumen.get("agregados")
-    errores = int(resumen.get("errores") or 0)
-    if subidos is not None and int(subidos) == 0 and errores > 0:
-        raise RuntimeError(
-            f"[{etiqueta}] Post-carga: subidos=0 con errores={errores}: {resumen}"
-        )
-    return resumen
+    from errores_operativos import exigir_ok_post_carga
+
+    return exigir_ok_post_carga(
+        resumen,
+        etiqueta=etiqueta,
+        esperado=esperado,
+        filas_plantilla=filas_plantilla,
+    )
 
 
 def _norm(texto: str) -> str:
