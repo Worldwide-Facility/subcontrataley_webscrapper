@@ -1,8 +1,9 @@
 """Fase compartida tras tener plantilla Excel + PDFs listos.
 
 Misma secuencia que liquidaciones/pagos (selectores `liquidaciones.*` ya
-existentes): ir a cargar → Excel → dropzone → Validar → Realizar →
-Documentos Agregados (la barra no llega a 100%).
+existentes): ir a cargar → Excel → dropzone (espera todos cargados) →
+Validar → Realizar → fin real de Documentos Agregados (no la primera
+aparición; la barra no llega a 100%).
 
 Usada por documentos vigentes del trabajador. Los 4 pagos FAENA siguen con
 su código propio en `carga_documento_unico` (sin depender de este módulo).
@@ -64,7 +65,12 @@ def ejecutar_carga_masiva_excel_y_pdfs(
     time.sleep(2)
     screenshot(driver, f"{etiqueta}_excel_enviado.png")
 
-    logger.info("[%s] Subiendo %s documentos", etiqueta, len(paths))
+    # esperado = docs principales (= PDFs subidos / filas con nombre_de_archivo).
+    esperado_docs = len(paths)
+    logger.info(
+        "[%s] Subiendo %s documentos (esperado Documentos Agregados=%s)",
+        etiqueta, len(paths), esperado_docs,
+    )
     cargar_documentos_dropzone(
         driver,
         wait,
@@ -100,9 +106,14 @@ def ejecutar_carga_masiva_excel_y_pdfs(
     screenshot(driver, f"{etiqueta}_post_confirmar.png")
     if not dry_run():
         post = esperar_post_carga(
-            driver, etiqueta=etiqueta, prefijo_shot=etiqueta, timeout=120
+            driver,
+            etiqueta=etiqueta,
+            prefijo_shot=etiqueta,
+            esperado=esperado_docs,
         )
-        asegurar_resultado_post_carga(post, etiqueta=etiqueta)
+        asegurar_resultado_post_carga(
+            post, etiqueta=etiqueta, esperado=esperado_docs
+        )
 
     logger.info(
         "[%s] nivel=%s | %s | excel=%s | pdfs=%s | %s",

@@ -234,7 +234,12 @@ def ejecutar_carga_un_documento(driver, wait, cfg: FlujoPagoConfig) -> Path:
     time.sleep(2)
     screenshot(driver, f"{cfg.clave}_excel_enviado.png")
 
-    logger.info("[%s] Subiendo %s documentos", cfg.clave, len(paths))
+    # esperado = filas/docs principales de la plantilla (= PDFs en nombre_de_archivo).
+    esperado_docs = len(paths)
+    logger.info(
+        "[%s] Subiendo %s documentos (esperado Documentos Agregados=%s)",
+        cfg.clave, len(paths), esperado_docs,
+    )
     cargar_documentos_dropzone(
         driver, wait, "liquidaciones.zona_upload_liquidaciones", paths,
         plantilla=plantilla, columna="nombre_de_archivo", etiqueta=cfg.clave,
@@ -262,9 +267,13 @@ def ejecutar_carga_un_documento(driver, wait, cfg: FlujoPagoConfig) -> Path:
     if not dry_run():
         exigir_ok_post_carga(
             esperar_post_carga(
-                driver, etiqueta=cfg.clave, prefijo_shot=cfg.clave, timeout=120
+                driver,
+                etiqueta=cfg.clave,
+                prefijo_shot=cfg.clave,
+                esperado=esperado_docs,
             ),
             etiqueta=cfg.clave,
+            esperado=esperado_docs,
         )
 
     logger.info(

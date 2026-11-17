@@ -79,6 +79,13 @@ class TestIngresoCargaMasiva(unittest.TestCase):
         body = "Cargando… 47%\nTotal: 12"
         self.assertFalse(ingreso._carga_masiva_terminada(FakeDriver(body)))
 
+    def test_no_terminada_si_sigue_en_curso(self):
+        body = (
+            "Se esta realizando la carga masiva…\n"
+            "Trabajadores Agregados: 12\n"
+        )
+        self.assertFalse(ingreso._carga_masiva_terminada(FakeDriver(body)))
+
     def test_no_depende_de_pct_100(self):
         """Aunque pct!=100, el mensaje de agregados basta (bug barra portal)."""
         body = "Trabajadores Agregados: 3\nEnviando… 88%"
