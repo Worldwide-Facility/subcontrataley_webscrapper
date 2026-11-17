@@ -180,7 +180,10 @@ def _elegir_tipo_y_periodo(driver, wait, clave: str, tipo_ui: str) -> str:
     )
     logger.info("[%s] Periodo mes anterior (UI; origen PDF desacoplado)", clave)
     periodo_ui = seleccionar_periodo_mes_anterior(
-        driver, wait, xpk(driver, "liquidaciones.select_periodo")
+        driver,
+        wait,
+        xpk(driver, "liquidaciones.select_periodo"),
+        tipo=tipo_ui or clave,
     )
     time.sleep(1)
     return periodo_ui

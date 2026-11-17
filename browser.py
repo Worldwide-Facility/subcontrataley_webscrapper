@@ -1602,14 +1602,21 @@ def seleccionar_periodo_mes_anterior(
     xpath: str,
     referencia: date | None = None,
     *,
-    estricto: bool = False,
+    tipo: str = "",
 ) -> str:
     """
-    Elige el periodo del mes anterior a la ejecución.
-    Si no hay match de texto, usa la última opción disponible del select
-    (o, con estricto=True, falla listando las opciones: evita cargar documentos
-    de un periodo en la plantilla de otro).
+    Elige el periodo del mes anterior a `referencia` (o hoy).
+
+    Regla Diego: si el periodo objetivo no aparece en el select, NO se elige
+    otra opción (nunca la última). Se lanza PeriodoNoDisponible → el caller
+    debe logout + exit 0 sin subir nada.
+
+    Select vacío/roto (sin opciones útiles) sí es error de página (ValueError).
+    Forzar otro periodo solo vía override explícito del caller (p.ej.
+    COTIZACIONES_PERIODO → referencia), nunca automáticamente.
     """
+    from errores_operativos import PeriodoNoDisponible
+
     ref = referencia or date.today()
     periodo = mes_anterior(ref)
     el = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
@@ -1619,7 +1626,7 @@ def seleccionar_periodo_mes_anterior(
     if not utiles:
         raise ValueError(f"Select de periodo sin opciones útiles: {xpath}")
 
-    elegido = None
+    labels = [o.text.strip() for o in utiles]
     for opt in utiles:
         if _periodo_coincide(opt.text, periodo.year, periodo.month):
             select.select_by_visible_text(opt.text)
@@ -1630,26 +1637,17 @@ def seleccionar_periodo_mes_anterior(
                 periodo.month,
                 elegido,
             )
-            break
+            disparar_change(driver, el)
+            return elegido
 
-    if elegido is None and estricto:
-        raise ValueError(
-            f"El portal no ofrece el periodo {periodo.year:04d}-{periodo.month:02d} "
-            f"en {xpath}; opciones: {[o.text.strip() for o in utiles]}"
-        )
-    if elegido is None:
-        opt = utiles[-1]
-        select.select_by_visible_text(opt.text)
-        elegido = opt.text.strip()
-        logger.warning(
-            "No matcheé mes anterior %04d-%02d; usé última opción: '%s'",
-            periodo.year,
-            periodo.month,
-            elegido,
-        )
-
-    disparar_change(driver, el)
-    return elegido
+    logger.info(
+        "Periodo objetivo %04d-%02d no está en el select (%s); opciones=%s",
+        periodo.year,
+        periodo.month,
+        tipo or "documento",
+        labels,
+    )
+    raise PeriodoNoDisponible(periodo, tipo=tipo, opciones=labels)
 
 
 def _archivos_completos(directorio: Path, glob_pat: str) -> set[Path]:

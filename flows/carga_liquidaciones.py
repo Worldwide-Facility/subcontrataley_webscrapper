@@ -51,7 +51,10 @@ def ejecutar(driver, wait) -> Path:
 
     logger.info("Eligiendo periodo (mes anterior a la ejecución)")
     periodo_ui = seleccionar_periodo_mes_anterior(
-        driver, wait, xpk(driver, "liquidaciones.select_periodo")
+        driver,
+        wait,
+        xpk(driver, "liquidaciones.select_periodo"),
+        tipo=NOMBRE,
     )
     time.sleep(1)
     screenshot(driver, "liquidaciones_tipo_y_periodo.png")

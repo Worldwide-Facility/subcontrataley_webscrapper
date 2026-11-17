@@ -59,7 +59,10 @@ def _elegir_tipo_y_periodo(driver, wait, tipo: str) -> str:
         driver, wait, xpk(driver, "liquidaciones.select_periodo"), min_opciones=1
     )
     periodo_ui = seleccionar_periodo_mes_anterior(
-        driver, wait, xpk(driver, "liquidaciones.select_periodo")
+        driver,
+        wait,
+        xpk(driver, "liquidaciones.select_periodo"),
+        tipo=tipo,
     )
     time.sleep(1)
     return periodo_ui
