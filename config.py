@@ -66,6 +66,18 @@ COTIZACIONES_PERIODO = os.getenv("COTIZACIONES_PERIODO", "").strip() or None
 CHROME_BIN = os.getenv("CHROME_BIN", "").strip() or None
 CHROMEDRIVER_PATH = os.getenv("CHROMEDRIVER_PATH", "").strip() or None
 
+# --- Esperas de carga (dropzone + post 'Realizar Carga Masiva') ---
+# Upload: timeout = max(minimo, base + N * per_file). Por lote si aplica.
+UPLOAD_TIMEOUT_BASE_S = float(os.getenv("UPLOAD_TIMEOUT_BASE_S", "120"))
+UPLOAD_TIMEOUT_PER_FILE_S = float(os.getenv("UPLOAD_TIMEOUT_PER_FILE_S", "8"))
+UPLOAD_TIMEOUT_MIN_S = float(os.getenv("UPLOAD_TIMEOUT_MIN_S", "60"))
+UPLOAD_ESTABLE_S = float(os.getenv("UPLOAD_ESTABLE_S", "3"))
+# Post-carga: no cortar al primer 'Documentos Agregados'; esperar fin real.
+# Default 60 min (cargas grandes ~200+ filas).
+POST_CARGA_TIMEOUT_S = float(os.getenv("POST_CARGA_TIMEOUT_S", "3600"))
+POST_CARGA_ESTABLE_S = float(os.getenv("POST_CARGA_ESTABLE_S", "15"))
+POST_CARGA_LOG_CADA_S = float(os.getenv("POST_CARGA_LOG_CADA_S", "30"))
+
 
 def require_credentials() -> tuple[str, str]:
     user = SUBCONTRATALEY_USERNAME.strip()

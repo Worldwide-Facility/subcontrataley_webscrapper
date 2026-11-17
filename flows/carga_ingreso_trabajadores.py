@@ -44,7 +44,10 @@ PASOS_NAV: list[str] = [
 ]
 
 # Segundos máximos esperando fin de "Realizar Carga Masiva"
-CARGA_TIMEOUT = int(os.getenv("INGRESO_CARGA_TIMEOUT", "600"))
+CARGA_TIMEOUT = int(os.getenv("INGRESO_CARGA_TIMEOUT", "3600"))
+# Estabilización del contador (mismo criterio que cmsd Documentos Agregados).
+CARGA_ESTABLE_S = float(os.getenv("INGRESO_CARGA_ESTABLE_S", "15"))
+CARGA_LOG_CADA_S = float(os.getenv("INGRESO_CARGA_LOG_CADA_S", "30"))
 
 
 def _resolver_plantilla(path: Path | None = None) -> Path:
@@ -144,14 +147,28 @@ def _parse_progreso_carga(body: str) -> dict[str, int | str | None]:
     return out
 
 
+def _mensaje_carga_en_curso(body: str) -> bool:
+    return bool(
+        re.search(
+            r"se\s+est[aá]\s+realizando\s+la\s+carga\s+masiva",
+            body or "",
+            flags=re.I,
+        )
+    )
+
+
 def _carga_masiva_terminada(driver) -> bool:
     """
-    Éxito = apareció 'Trabajadores Agregados' (o mensaje de fin).
+    True si hay señal de fin ('Trabajadores Agregados' o mensaje de fin) Y
+    ya no está el aviso 'Se esta realizando la carga masiva'.
     No depende de pct==100: la barra del portal puede no llegar a 100% (bug).
+    La estabilización del contador la hace esperar_carga_masiva.
     """
     try:
         body = driver.find_element(By.TAG_NAME, "body").text or ""
     except Exception:
+        return False
+    if _mensaje_carga_en_curso(body):
         return False
     b = body.lower()
     prog = _parse_progreso_carga(body)
@@ -178,31 +195,77 @@ def esperar_carga_masiva(
     driver,
     *,
     timeout: float | None = None,
+    esperado: int | None = None,
+    estable_s: float | None = None,
 ) -> bool:
-    """Espera 'Trabajadores Agregados' / mensaje de fin tras Realizar Carga Masiva."""
+    """
+    Espera fin real de 'Realizar Carga Masiva' (Trabajadores Agregados).
+    No corta en la primera aparición del contador: exige que desaparezca el
+    mensaje en curso y que el contador alcance `esperado` o se estabilice.
+    """
+    from espera_carga import (
+        EstadoEsperaPostCarga,
+        LecturaPostCarga,
+        avanzar_espera_post_carga,
+    )
+
     limite = float(timeout if timeout is not None else CARGA_TIMEOUT)
+    est_s = float(CARGA_ESTABLE_S if estable_s is None else estable_s)
+    log_s = float(CARGA_LOG_CADA_S)
     t0 = time.time()
     ultimo_log = 0.0
+    estado = EstadoEsperaPostCarga()
     while time.time() - t0 < limite:
         _aceptar_alerta_si_hay(driver)
-        if _carga_masiva_terminada(driver):
-            screenshot(driver, "ingreso_carga_masiva_ok.png")
-            logger.info("Carga masiva terminada (%.0fs).", time.time() - t0)
-            return True
-        if time.time() - ultimo_log >= 15:
-            try:
-                body = driver.find_element(By.TAG_NAME, "body").text or ""
-                prog = _parse_progreso_carga(body)
-                logger.info(
-                    "Carga masiva en curso… pct=%s agregados=%s total=%s (%.0fs)",
-                    prog["pct"],
-                    prog["agregados"],
-                    prog["total"],
-                    time.time() - t0,
-                )
-            except Exception:
-                logger.info("Carga masiva en curso… (%.0fs)", time.time() - t0)
-            ultimo_log = time.time()
+        try:
+            body = driver.find_element(By.TAG_NAME, "body").text or ""
+        except Exception:
+            body = ""
+        prog = _parse_progreso_carga(body)
+        lectura = LecturaPostCarga(
+            agregados=prog.get("agregados"),
+            subidos=prog.get("total"),
+            errores=0,
+            en_curso=_mensaje_carga_en_curso(body),
+            texto=body,
+        )
+        # Si no hay contador numérico pero ya hay mensaje de fin, simular
+        # agregados=esperado (o 1) para poder estabilizar.
+        if lectura.agregados is None and _carga_masiva_terminada(driver):
+            lectura = LecturaPostCarga(
+                agregados=esperado if esperado is not None else 1,
+                en_curso=False,
+                texto=body,
+            )
+        ahora = time.time()
+        decision = avanzar_espera_post_carga(
+            lectura, estado, ahora=ahora, esperado=esperado, estable_s=est_s
+        )
+        estado = decision.estado
+        if ahora - ultimo_log >= log_s or decision.terminado:
+            logger.info(
+                "Carga masiva ingreso… agregados=%s esperado=%s en_curso=%s "
+                "motivo=%s (%.0fs)",
+                lectura.agregados,
+                esperado,
+                lectura.en_curso,
+                decision.motivo,
+                ahora - t0,
+            )
+            ultimo_log = ahora
+        if decision.terminado:
+            if decision.ok:
+                screenshot(driver, "ingreso_carga_masiva_ok.png")
+                logger.info("Carga masiva terminada (%.0fs).", ahora - t0)
+                return True
+            screenshot(driver, "ingreso_carga_masiva_incompleta.png")
+            logger.error(
+                "Carga masiva incompleta: agregados=%s < esperado=%s (%.0fs)",
+                lectura.agregados,
+                esperado,
+                ahora - t0,
+            )
+            return False
         time.sleep(2)
     screenshot(driver, "ingreso_carga_masiva_timeout.png")
     logger.warning("Timeout esperando fin de carga masiva (%.0fs).", limite)

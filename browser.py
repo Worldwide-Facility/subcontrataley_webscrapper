@@ -35,6 +35,22 @@ from config import (
     HEADLESS,
     IMPLICIT_WAIT,
     IS_CLOUD_RUN,
+    POST_CARGA_ESTABLE_S,
+    POST_CARGA_LOG_CADA_S,
+    POST_CARGA_TIMEOUT_S,
+    UPLOAD_ESTABLE_S,
+    UPLOAD_TIMEOUT_BASE_S,
+    UPLOAD_TIMEOUT_MIN_S,
+    UPLOAD_TIMEOUT_PER_FILE_S,
+)
+from espera_carga import (
+    EstadoEsperaPostCarga,
+    avanzar_espera_post_carga,
+    dropzone_carga_completa,
+    parse_lectura_post_carga,
+    resumen_desde_decision,
+    timeout_upload_s,
+    zona_upload_lista,
 )
 
 logger = logging.getLogger(__name__)
@@ -642,13 +658,24 @@ def esperar_uploads_completos(
     zona_xpath: str,
     *,
     n_min: int | None = None,
-    timeout: float = 600,
-    estable_s: float = 3.0,
+    timeout: float | None = None,
+    estable_s: float | None = None,
 ) -> dict:
     """
-    Espera a que terminen las subidas en la zona (sin barras de progreso activas).
-    Si n_min, también exige al menos esa cantidad de items en la UI.
+    Espera a que terminen las subidas en la zona (sin spinners/progreso).
+    Si n_min, exige al menos esa cantidad de items. Timeout por defecto
+    proporcional a n_min (UPLOAD_TIMEOUT_BASE_S + N×UPLOAD_TIMEOUT_PER_FILE_S).
     """
+    if timeout is None:
+        timeout = timeout_upload_s(
+            n_min or 0,
+            base_s=UPLOAD_TIMEOUT_BASE_S,
+            per_file_s=UPLOAD_TIMEOUT_PER_FILE_S,
+            minimo_s=UPLOAD_TIMEOUT_MIN_S,
+        )
+    if estable_s is None:
+        estable_s = UPLOAD_ESTABLE_S
+
     t0 = time.time()
     last_log = 0.0
     estable_desde: float | None = None
@@ -656,12 +683,7 @@ def esperar_uploads_completos(
 
     while time.time() - t0 < timeout:
         ultimo = _estado_zona_upload(driver, zona_xpath) or {}
-        items = int(ultimo.get("items") or 0)
-        progress = int(ultimo.get("progress") or 0)
-        complete = int(ultimo.get("complete") or 0)
-        ok_n = n_min is None or items >= n_min
-        # Completo si no hay progreso y conteo OK; refuerzo si Dropzone marca success.
-        ready = ok_n and progress == 0 and (complete >= (n_min or 0) or complete == 0 or complete >= items * 0.9)
+        ready = zona_upload_lista(ultimo, n_min=n_min)
 
         if ready:
             if estable_desde is None:
@@ -670,7 +692,7 @@ def esperar_uploads_completos(
                 logger.info(
                     "Uploads OK zona=%s items=%s complete=%s (%.0fs)",
                     zona_xpath,
-                    items,
+                    ultimo.get("items"),
                     ultimo.get("complete"),
                     time.time() - t0,
                 )
@@ -681,20 +703,22 @@ def esperar_uploads_completos(
         now = time.time()
         if now - last_log >= 5:
             logger.info(
-                "Esperando uploads… items=%s processing=%s progress=%s complete=%s n_min=%s (%.0fs)",
-                items,
+                "Esperando uploads… items=%s processing=%s progress=%s "
+                "complete=%s n_min=%s (%.0fs/%.0fs)",
+                ultimo.get("items"),
                 ultimo.get("processing"),
-                progress,
-                complete,
+                ultimo.get("progress"),
+                ultimo.get("complete"),
                 n_min,
                 now - t0,
+                timeout,
             )
             last_log = now
         time.sleep(0.5)
 
     raise TimeoutError(
-        f"Timeout {timeout:.0f}s esperando uploads en {zona_xpath}. "
-        f"Último estado={ultimo}"
+        f"Timeout {timeout:.0f}s esperando uploads en {zona_xpath} "
+        f"(n_min={n_min}). Último estado={ultimo}"
     )
 
 
@@ -726,6 +750,16 @@ def subir_archivos(
         return
 
     base = int((_estado_zona_upload(driver, xpath) or {}).get("items") or 0)
+    timeout_total = timeout_upload_s(
+        len(paths),
+        base_s=UPLOAD_TIMEOUT_BASE_S,
+        per_file_s=UPLOAD_TIMEOUT_PER_FILE_S,
+        minimo_s=UPLOAD_TIMEOUT_MIN_S,
+    )
+    if timeout is not None and timeout > 0:
+        # El caller puede pedir más (nunca menos que el proporcional).
+        timeout_total = max(float(timeout), timeout_total)
+    por_archivo = max(30.0, UPLOAD_TIMEOUT_PER_FILE_S * 4)
 
     if uno_a_uno:
         for i, path in enumerate(paths, start=1):
@@ -746,7 +780,7 @@ def subir_archivos(
             objetivo = base + i
             t0 = time.time()
             ok = False
-            while time.time() - t0 < min(120.0, max(60.0, timeout)):
+            while time.time() - t0 < por_archivo:
                 st = _estado_zona_upload(driver, xpath) or {}
                 items = int(st.get("items") or 0)
                 # Nombre visible en la zona (más fiable que solo el contador)
@@ -780,14 +814,13 @@ def subir_archivos(
             else:
                 # estabilizar barras un momento
                 time.sleep(0.4)
-        # Espera final global sin progreso
+        # Espera final global: todos cargados, sin progreso pendiente
         if esperar:
             esperar_uploads_completos(
                 driver,
                 xpath,
-                n_min=len(paths),
-                timeout=min(120.0, timeout),
-                estable_s=2.0,
+                n_min=base + len(paths),
+                timeout=timeout_total,
             )
         logger.info(
             "Enviados %s archivo(s) uno-a-uno (base=%s) a %s",
@@ -803,7 +836,7 @@ def subir_archivos(
     logger.info("Enviados %s archivo(s) multi a %s", len(paths), xpath)
     if esperar:
         esperar_uploads_completos(
-            driver, xpath, n_min=base + len(paths), timeout=timeout
+            driver, xpath, n_min=base + len(paths), timeout=timeout_total
         )
 
 
@@ -882,25 +915,9 @@ def comparar_archivos_dropzone(esperados: list[str], visibles: list[dict]) -> di
     """
     Lógica pura (testeable offline). Coincidencia EXACTA de nombre.
     visibles: [{name, error, success, processing}].
-    Un archivo cuenta como OK si al menos una preview con ese nombre no tiene error.
+    OK solo si todos están, sin error y sin processing pendiente.
     """
-    ok_names = {v["name"] for v in visibles if not v.get("error")}
-    err_names = {v["name"] for v in visibles if v.get("error")}
-    proc_names = {v["name"] for v in visibles if v.get("processing")}
-    esperados_u = list(dict.fromkeys(esperados))
-    faltan = [n for n in esperados_u if n not in ok_names and n not in err_names]
-    con_error = [n for n in esperados_u if n in err_names and n not in ok_names]
-    procesando = [n for n in esperados_u if n in proc_names]
-    extra = sorted({v["name"] for v in visibles} - set(esperados_u))
-    return {
-        "esperados": len(esperados_u),
-        "visibles": len({v["name"] for v in visibles}),
-        "faltan": faltan,
-        "con_error": con_error,
-        "procesando": procesando,
-        "extra": extra,
-        "ok": not faltan and not con_error,
-    }
+    return dropzone_carga_completa(visibles, esperados)
 
 
 def leer_archivos_dropzone(driver, zona_xpath: str) -> list[dict]:
@@ -996,8 +1013,9 @@ def verificar_archivos_dropzone(
 
     shot = screenshot(driver, f"{etiqueta.replace(' ', '_')}_dropzone_incompleto.png")
     raise RuntimeError(
-        f"[{etiqueta}] Archivos no presentes/OK en dropzone tras {reintentos} reintentos: "
-        f"faltan={res.get('faltan')} con_error={res.get('con_error')} "
+        f"[{etiqueta}] Archivos no presentes/OK en dropzone tras {reintentos} reintentos "
+        f"(no se pulsa Carga Masiva): faltan={res.get('faltan')} "
+        f"con_error={res.get('con_error')} procesando={res.get('procesando')} "
         f"(esperados={res.get('esperados')} visibles={res.get('visibles')}) screenshot={shot}"
     )
 
@@ -1012,7 +1030,7 @@ def cargar_documentos_dropzone(
     columna: str = "nombre_de_archivo",
     etiqueta: str = "carga",
     timeout_zona: float = 180,
-    timeout_upload: float = 900,
+    timeout_upload: float | None = None,
     reintentos: int = 3,
 ) -> None:
     """
@@ -1020,7 +1038,10 @@ def cargar_documentos_dropzone(
     1) espera la zona realmente lista (visible, Dropzone propio, estable);
     2) sube uno a uno esperando cada archivo;
     3) verifica nombres visibles vs `columna` de la plantilla (exacto),
-       re-sube faltantes/error hasta `reintentos` y si no, error claro + screenshot.
+       re-sube faltantes/error hasta `reintentos` y si no, error claro + screenshot
+       (no se avanza a Validar/Carga Masiva).
+    Timeout de upload: UPLOAD_TIMEOUT_BASE_S + N×UPLOAD_TIMEOUT_PER_FILE_S
+    (o `timeout_upload` si se pasa uno mayor).
     DRY_RUN: solo verifica el destino (no envía nada).
     """
     if not rutas:
@@ -1031,15 +1052,28 @@ def cargar_documentos_dropzone(
         return
     zona = xpk(driver, key, visible=False)
     esperar_zona_documentos_habilitada(driver, zona, timeout=timeout_zona)
-    logger.info("[%s] Subiendo %s archivo(s) uno a uno → %s", etiqueta, len(rutas), zona)
-    subir_archivos(driver, wait, zona, rutas, esperar=True, timeout=timeout_upload, uno_a_uno=True)
+    to_up = timeout_upload_s(
+        len(rutas),
+        base_s=UPLOAD_TIMEOUT_BASE_S,
+        per_file_s=UPLOAD_TIMEOUT_PER_FILE_S,
+        minimo_s=UPLOAD_TIMEOUT_MIN_S,
+    )
+    if timeout_upload is not None:
+        to_up = max(float(timeout_upload), to_up)
+    logger.info(
+        "[%s] Subiendo %s archivo(s) uno a uno → %s (timeout_upload=%.0fs)",
+        etiqueta, len(rutas), zona, to_up,
+    )
+    subir_archivos(driver, wait, zona, rutas, esperar=True, timeout=to_up, uno_a_uno=True)
     if plantilla is not None:
         esperados = nombres_archivo_plantilla(Path(plantilla), columna=columna)
     else:
         esperados = [Path(p).name for p in rutas]
+    # Verificación final: cantidad esperada + sin spinners (falla operativa si no).
     verificar_archivos_dropzone(
         driver, wait, zona, esperados, rutas,
-        reintentos=reintentos, timeout_upload=300, etiqueta=f"{etiqueta}:{columna}",
+        reintentos=reintentos, timeout_upload=min(300.0, to_up),
+        etiqueta=f"{etiqueta}:{columna}",
     )
 
 
@@ -1135,6 +1169,7 @@ const mSub = t.match(/Documentos\\s+Subidos\\s*:\\s*(\\d+)/i)
           || t.match(/\\bSubidos\\s*:\\s*(\\d+)/i);
 const mErr = t.match(/errores\\s+(?:encontrados\\s*)?:\\s*(\\d+)/i)
           || t.match(/(\\d+)\\s*errores\\s+encontrados/i);
+const enCurso = /se\\s+est[aá]\\s+realizando\\s+la\\s+carga\\s+masiva/i.test(t);
 const vis = e => !!(e && e.offsetParent !== null);
 const modals = [...document.querySelectorAll('.modal,.swal2-popup,.bootbox,.alert,[role=alert]')]
   .filter(vis).map(e => (e.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 300));
@@ -1142,60 +1177,174 @@ return {
   agregados: mAgg ? parseInt(mAgg[1], 10) : null,
   subidos: mSub ? parseInt(mSub[1], 10) : null,
   errores: mErr ? parseInt(mErr[1], 10) : 0,
+  en_curso: enCurso,
+  body: t.slice(0, 4000),
   modals: modals
 };
 """
 
 
 def esperar_post_carga(
-    driver, *, etiqueta: str = "carga", prefijo_shot: str = "carga", timeout: float = 120
+    driver,
+    *,
+    etiqueta: str = "carga",
+    prefijo_shot: str = "carga",
+    timeout: float | None = None,
+    esperado: int | None = None,
+    estable_s: float | None = None,
+    log_cada_s: float | None = None,
 ) -> dict:
     """
-    Tras el ÚNICO click en 'Realizar Carga Masiva'. El modal 'Enviando correo...
-    Documentos Agregados: N' nunca llega al 100% (bug del sitio): en cuanto aparece
-    se registra N, screenshot y se retorna éxito. No clickea ningún botón.
+    Tras el ÚNICO click en 'Realizar Carga Masiva'.
+
+    NO trata la primera aparición de 'Documentos Agregados' como fin (bug real
+    17-nov: el contador avanzaba mientras seguía 'Se esta realizando la carga
+    masiva' y al cerrar el navegador quedaron filas sin subir).
+
+    Espera a que:
+      1) desaparezca el mensaje en curso, y
+      2) Documentos Agregados >= `esperado` (filas de plantilla / docs
+         principales) O el contador se estabilice `estable_s` segundos.
+
+    La barra al 100% NUNCA es criterio (bug del portal: no llega).
+    Timeout amplio: POST_CARGA_TIMEOUT_S (default 3600s).
     """
+    limite = float(POST_CARGA_TIMEOUT_S if timeout is None else timeout)
+    est_s = float(POST_CARGA_ESTABLE_S if estable_s is None else estable_s)
+    log_s = float(POST_CARGA_LOG_CADA_S if log_cada_s is None else log_cada_s)
     t0 = time.time()
-    resumen: dict = {}
-    while time.time() - t0 < timeout:
+    last_log = 0.0
+    estado = EstadoEsperaPostCarga()
+    lectura = parse_lectura_post_carga(agregados=None)
+    decision = None
+    raw: dict = {}
+
+    logger.info(
+        "[%s] Esperando fin real de carga masiva (esperado=%s estable=%.0fs "
+        "timeout=%.0fs; criterio_esperado=filas_plantilla_docs_principales)",
+        etiqueta, esperado, est_s, limite,
+    )
+
+    while time.time() - t0 < limite:
         try:
-            resumen = driver.execute_script(JS_RESUMEN_CARGA) or {}
+            raw = driver.execute_script(JS_RESUMEN_CARGA) or {}
         except Exception:
-            resumen = {}
-        modals = " ".join(resumen.get("modals") or [])
-        if resumen.get("agregados") is not None or re.search(r"enviando correo|documentos agregados", modals, re.I):
-            time.sleep(2)  # dejar que el contador avance un poco antes de capturar
-            try:
-                resumen = driver.execute_script(JS_RESUMEN_CARGA) or resumen
-            except Exception:
-                pass
-            screenshot(driver, f"{prefijo_shot}_post_carga.png")
-            resumen = dict(resumen, ok=True)
-            logger.info(
-                "[%s] Carga masiva enviada: Documentos Agregados=%s subidos=%s errores=%s | %s (%.0fs)",
-                etiqueta,
-                resumen.get("agregados"),
-                resumen.get("subidos"),
-                resumen.get("errores"),
-                resumen.get("modals"),
-                time.time() - t0,
-            )
-            return resumen
-        time.sleep(1)
-    screenshot(driver, f"{prefijo_shot}_sin_progreso_post_carga.png")
-    logger.warning("[%s] No apareció 'Documentos Agregados' en %.0fs; revisar UI", etiqueta, timeout)
-    return dict(resumen, ok=False)
-
-
-def asegurar_resultado_post_carga(resumen: dict, *, etiqueta: str = "carga") -> dict:
-    """
-    Falla la carga si el portal no mostró fin ('Documentos Agregados') o si
-    subidos==0 con errores>0. `subidos` cae a `agregados` si el portal no lo muestra.
-    """
-    if not resumen.get("ok"):
-        raise RuntimeError(
-            f"[{etiqueta}] Post-carga falló (no apareció 'Documentos Agregados'): {resumen}"
+            raw = {}
+        lectura = parse_lectura_post_carga(
+            agregados=raw.get("agregados"),
+            subidos=raw.get("subidos"),
+            errores=int(raw.get("errores") or 0),
+            modals=list(raw.get("modals") or []),
+            texto=str(raw.get("body") or ""),
+            en_curso=bool(raw.get("en_curso")),
         )
+        ahora = time.time()
+        decision = avanzar_espera_post_carga(
+            lectura,
+            estado,
+            ahora=ahora,
+            esperado=esperado,
+            estable_s=est_s,
+        )
+        estado = decision.estado
+
+        if ahora - last_log >= log_s or decision.terminado:
+            logger.info(
+                "[%s] Post-carga: Documentos Agregados=%s esperado=%s "
+                "en_curso=%s motivo=%s (%.0fs)",
+                etiqueta,
+                lectura.agregados,
+                esperado,
+                lectura.en_curso,
+                decision.motivo,
+                ahora - t0,
+            )
+            last_log = ahora
+
+        if decision.terminado:
+            screenshot(driver, f"{prefijo_shot}_post_carga.png")
+            resumen = resumen_desde_decision(
+                lectura, decision, esperado=esperado, elapsed_s=ahora - t0
+            )
+            if decision.ok:
+                logger.info(
+                    "[%s] Carga masiva terminada: Documentos Agregados=%s "
+                    "esperado=%s subidos=%s errores=%s | %s (%.0fs)",
+                    etiqueta,
+                    resumen.get("agregados"),
+                    esperado,
+                    resumen.get("subidos"),
+                    resumen.get("errores"),
+                    resumen.get("motivo"),
+                    ahora - t0,
+                )
+            else:
+                logger.error(
+                    "[%s] Carga masiva incompleta: Documentos Agregados=%s "
+                    "< esperado=%s (motivo=%s, %.0fs)",
+                    etiqueta,
+                    resumen.get("agregados"),
+                    esperado,
+                    resumen.get("motivo"),
+                    ahora - t0,
+                )
+            return resumen
+
+        time.sleep(1)
+
+    screenshot(driver, f"{prefijo_shot}_sin_progreso_post_carga.png")
+    logger.warning(
+        "[%s] Timeout %.0fs esperando fin de carga masiva "
+        "(agregados=%s esperado=%s en_curso=%s)",
+        etiqueta, limite, lectura.agregados, esperado, lectura.en_curso,
+    )
+    return {
+        "ok": False,
+        "agregados": lectura.agregados,
+        "subidos": lectura.subidos,
+        "errores": lectura.errores,
+        "modals": lectura.modals,
+        "en_curso": lectura.en_curso,
+        "esperado": esperado,
+        "motivo": "timeout",
+        "elapsed_s": time.time() - t0,
+        "criterio_esperado": (
+            "filas_plantilla_docs_principales"
+            if esperado is not None
+            else "estabilizacion_sin_esperado"
+        ),
+    }
+
+
+def asegurar_resultado_post_carga(
+    resumen: dict, *, etiqueta: str = "carga", esperado: int | None = None
+) -> dict:
+    """
+    Falla la carga si el portal no mostró fin real, si quedó bajo el esperado,
+    o si subidos==0 con errores>0. `subidos` cae a `agregados` si el portal
+    no lo muestra. `esperado` = filas de plantilla (docs principales).
+    """
+    exp = esperado if esperado is not None else resumen.get("esperado")
+    if not resumen.get("ok"):
+        agg = resumen.get("agregados")
+        if exp is not None and agg is not None and int(agg) < int(exp):
+            raise RuntimeError(
+                f"[{etiqueta}] Post-carga incompleta: Documentos Agregados={agg} "
+                f"< esperado={exp} (filas de plantilla / docs principales; "
+                f"no se usa la barra al 100%). resumen={resumen}"
+            )
+        raise RuntimeError(
+            f"[{etiqueta}] Post-carga falló (no terminó la carga masiva / "
+            f"no apareció 'Documentos Agregados' estable): {resumen}"
+        )
+    if exp is not None:
+        agg = resumen.get("agregados")
+        if agg is None or int(agg) < int(exp):
+            raise RuntimeError(
+                f"[{etiqueta}] Post-carga incompleta: Documentos Agregados={agg} "
+                f"< esperado={exp} (filas de plantilla / docs principales). "
+                f"resumen={resumen}"
+            )
     subidos = resumen.get("subidos")
     if subidos is None:
         subidos = resumen.get("agregados")

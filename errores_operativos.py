@@ -7,25 +7,48 @@ import traceback
 from typing import Any
 
 
-def exigir_ok_post_carga(resumen: dict[str, Any], *, etiqueta: str) -> dict[str, Any]:
+def exigir_ok_post_carga(
+    resumen: dict[str, Any],
+    *,
+    etiqueta: str,
+    esperado: int | None = None,
+) -> dict[str, Any]:
     """
-    Tras esperar_post_carga: falla si no apareció 'Documentos Agregados'.
-    La barra del portal no llega a 100% (bug); ese mensaje es el criterio de éxito.
+    Tras esperar_post_carga: falla si la carga no terminó de verdad o si
+    Documentos Agregados quedó bajo el esperado (filas de plantilla / docs
+    principales). La barra del portal no llega a 100% (bug); no se usa.
     """
+    exp = esperado if esperado is not None else resumen.get("esperado")
     if not resumen.get("ok"):
+        agg = resumen.get("agregados")
+        if exp is not None and agg is not None and int(agg) < int(exp):
+            raise RuntimeError(
+                f"[{etiqueta}] Post-carga incompleta: Documentos Agregados={agg} "
+                f"< esperado={exp} (filas de plantilla / docs principales; "
+                f"criterio distinto de la barra al 100%). resumen={resumen}"
+            )
         raise RuntimeError(
-            f"[{etiqueta}] Post-carga falló: no apareció 'Documentos Agregados' "
-            f"(criterio de éxito; la barra no llega a 100% por bug del portal). "
-            f"resumen={resumen}"
+            f"[{etiqueta}] Post-carga falló: no terminó la carga masiva "
+            f"(mensaje en curso o 'Documentos Agregados' ausente/inestable; "
+            f"la barra no llega a 100% por bug del portal). resumen={resumen}"
         )
+    if exp is not None:
+        agg = resumen.get("agregados")
+        if agg is None or int(agg) < int(exp):
+            raise RuntimeError(
+                f"[{etiqueta}] Post-carga incompleta: Documentos Agregados={agg} "
+                f"< esperado={exp} (filas de plantilla / docs principales). "
+                f"resumen={resumen}"
+            )
     return resumen
 
 
 def es_error_operativo(exc: BaseException) -> bool:
     """
-    True para fallos de datos/periodo conocidos (no bugs de código):
+    True para fallos de datos/periodo/carga conocidos (no bugs de código):
     - PDFs/cotizaciones ausentes del periodo
     - periodo inexistente en el select del portal
+    - dropzone incompleto / post-carga incompleta o timeout de espera
     """
     msg = str(exc)
     if isinstance(exc, FileNotFoundError):
@@ -36,6 +59,16 @@ def es_error_operativo(exc: BaseException) -> bool:
         if "El portal no ofrece el periodo" in msg:
             return True
         if "Select de periodo sin opciones útiles" in msg:
+            return True
+    if isinstance(exc, TimeoutError):
+        if "esperando uploads" in msg or "esperando fin" in msg:
+            return True
+    if isinstance(exc, RuntimeError):
+        if "Post-carga incompleta" in msg:
+            return True
+        if "Post-carga falló" in msg:
+            return True
+        if "Archivos no presentes/OK en dropzone" in msg:
             return True
     return False
 

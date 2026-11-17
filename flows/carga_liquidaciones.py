@@ -65,14 +65,17 @@ def ejecutar(driver, wait) -> Path:
     screenshot(driver, "liquidaciones_despues_descarga.png")
 
     periodo_gcs = periodo_gcs_texto()
-    # El portal no vuelve a entregar esta planilla después de la carga.
-    # Se guarda el Excel original (RUT y faena) para el resto de ejecuciones del mes.
-    # Solo se guarda la primera del mes; si ya existe no se sobrescribe
-    # (PLANTILLA_LIQ_FORZAR=1 para forzar). Esta carga usa igual su planilla recién bajada.
+    # Reanudación / plantilla:
+    # - SIEMPRE se usa la plantilla recién bajada del portal (solo pendientes:
+    #   tras una carga parcial el portal entrega p.ej. 109 filas, no 229).
+    # - GCS guarda la primera del mes (RUT/faena para otros flujos) y NO se
+    #   sobrescribe ni se usa aquí para decidir qué subir
+    #   (PLANTILLA_LIQ_FORZAR=1 para forzar reemplazo en GCS).
     guardar_plantilla_liquidaciones(plantilla, periodo_gcs)
     staging = DOWNLOAD_DIR / "staging_liquidaciones" / periodo_gcs.replace(" ", "_")
     logger.info(
-        "Rellenando plantilla desde GCS (UI='%s', GCS='%s')",
+        "Rellenando plantilla del PORTAL (pendientes) desde GCS docs "
+        "(UI='%s', GCS='%s'); plantilla GCS del mes no se usa para el upload",
         periodo_ui,
         periodo_gcs,
     )
@@ -81,9 +84,13 @@ def ejecutar(driver, wait) -> Path:
         periodo_gcs=periodo_gcs,
     )
     plantilla = resultado.plantilla
+    # esperado post-carga = filas de plantilla (docs principales), NO liq+tr.
+    esperado_docs = int(resultado.filas)
     logger.info(
-        "Descargando PDFs solo de RUTs completos (%s) → %s",
+        "Descargando PDFs solo de RUTs completos (%s filas → esperado "
+        "Documentos Agregados=%s) → %s",
         resultado.filas,
+        esperado_docs,
         staging,
     )
     paths_liq = descargar_docs(resultado.docs_liquidacion, staging / "liquidaciones")
@@ -139,18 +146,23 @@ def ejecutar(driver, wait) -> Path:
     if not dry_run():
         exigir_ok_post_carga(
             esperar_post_carga(
-                driver, etiqueta=NOMBRE, prefijo_shot="liquidaciones", timeout=120
+                driver,
+                etiqueta=NOMBRE,
+                prefijo_shot="liquidaciones",
+                esperado=esperado_docs,
             ),
             etiqueta=NOMBRE,
+            esperado=esperado_docs,
         )
 
     logger.info(
-        "%s: %s | excel=%s | keep=%s | liq=%s | tr=%s | "
+        "%s: %s | excel=%s | keep=%s | esperado_docs=%s | liq=%s | tr=%s | "
         "liquido0=%s | eliminados=%s",
         NOMBRE,
         "DRY_RUN: carga NO enviada" if dry_run() else "carga enviada",
         plantilla.name,
         resultado.filas,
+        esperado_docs,
         len(paths_liq),
         len(paths_tr),
         resultado.liquido_cero,

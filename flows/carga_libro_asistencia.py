@@ -242,12 +242,18 @@ def ejecutar(driver, wait) -> Path:
     time.sleep(3)
     screenshot(driver, "asist_e2e_carga_masiva_click.png")
 
-    # --- 7. Esperar fin (nunca re-clickea Realizar; éxito = Documentos Agregados) ---
+    # --- 7. Esperar fin real (no cortar al primer 'Documentos Agregados') ---
+    # esperado = filas/docs principales de la plantilla (= PDFs subidos).
+    esperado_docs = len(relleno.pdfs)
     exigir_ok_post_carga(
         esperar_post_carga(
-            driver, etiqueta=NOMBRE, prefijo_shot="asist_e2e", timeout=120
+            driver,
+            etiqueta=NOMBRE,
+            prefijo_shot="asist_e2e",
+            esperado=esperado_docs,
         ),
         etiqueta=NOMBRE,
+        esperado=esperado_docs,
     )
 
     logger.info(
