@@ -27,6 +27,7 @@ from browser import (
     screenshot,
     xpk,
 )
+from espera_carga import calcular_esperado_post_carga
 from flows.nivel_carga import NivelCarga
 
 logger = logging.getLogger(__name__)
@@ -65,10 +66,14 @@ def ejecutar_carga_masiva_excel_y_pdfs(
     time.sleep(2)
     screenshot(driver, f"{etiqueta}_excel_enviado.png")
 
-    # esperado = docs principales (= PDFs subidos / filas con nombre_de_archivo).
-    esperado_docs = len(paths)
+    esp = calcular_esperado_post_carga(
+        filas_plantilla=len(paths),
+        pdfs_principales_unicos=len(paths),
+    )
+    esperado_docs = int(esp["minimo_razonable"])
+    filas_plantilla = int(esp["filas_plantilla"])
     logger.info(
-        "[%s] Subiendo %s documentos (esperado Documentos Agregados=%s)",
+        "[%s] Subiendo %s documentos (minimo_razonable Documentos Agregados=%s)",
         etiqueta, len(paths), esperado_docs,
     )
     cargar_documentos_dropzone(
@@ -110,9 +115,13 @@ def ejecutar_carga_masiva_excel_y_pdfs(
             etiqueta=etiqueta,
             prefijo_shot=etiqueta,
             esperado=esperado_docs,
+            filas_plantilla=filas_plantilla,
         )
         asegurar_resultado_post_carga(
-            post, etiqueta=etiqueta, esperado=esperado_docs
+            post,
+            etiqueta=etiqueta,
+            esperado=esperado_docs,
+            filas_plantilla=filas_plantilla,
         )
 
     logger.info(

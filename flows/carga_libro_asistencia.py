@@ -243,17 +243,25 @@ def ejecutar(driver, wait) -> Path:
     screenshot(driver, "asist_e2e_carga_masiva_click.png")
 
     # --- 7. Esperar fin real (no cortar al primer 'Documentos Agregados') ---
-    # esperado = filas/docs principales de la plantilla (= PDFs subidos).
-    esperado_docs = len(relleno.pdfs)
+    from espera_carga import calcular_esperado_post_carga
+
+    esp = calcular_esperado_post_carga(
+        filas_plantilla=int(relleno.filas),
+        pdfs_principales_unicos=len(relleno.pdfs),
+    )
+    esperado_docs = int(esp["minimo_razonable"])
+    filas_plantilla = int(esp["filas_plantilla"])
     exigir_ok_post_carga(
         esperar_post_carga(
             driver,
             etiqueta=NOMBRE,
             prefijo_shot="asist_e2e",
             esperado=esperado_docs,
+            filas_plantilla=filas_plantilla,
         ),
         etiqueta=NOMBRE,
         esperado=esperado_docs,
+        filas_plantilla=filas_plantilla,
     )
 
     logger.info(

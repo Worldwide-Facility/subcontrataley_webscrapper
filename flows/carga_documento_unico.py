@@ -34,6 +34,7 @@ from browser import (
 )
 from config import COTIZACIONES_DIA_DISPONIBLE, COTIZACIONES_PERIODO, DOWNLOAD_DIR
 from errores_operativos import exigir_ok_post_carga
+from espera_carga import calcular_esperado_post_carga
 from flows.llegar_a_plantillas import llegar_a_cargar_plantillas
 from flows.pagos_config import FlujoPagoConfig, fuente_por_faena
 from flows.plantilla_schema import GLOB_PLANTILLA
@@ -234,10 +235,15 @@ def ejecutar_carga_un_documento(driver, wait, cfg: FlujoPagoConfig) -> Path:
     time.sleep(2)
     screenshot(driver, f"{cfg.clave}_excel_enviado.png")
 
-    # esperado = filas/docs principales de la plantilla (= PDFs en nombre_de_archivo).
-    esperado_docs = len(paths)
+    # minimo_razonable = min(filas plantilla si se conoce, PDFs únicos).
+    esp = calcular_esperado_post_carga(
+        filas_plantilla=len(paths),
+        pdfs_principales_unicos=len(paths),
+    )
+    esperado_docs = int(esp["minimo_razonable"])
+    filas_plantilla = int(esp["filas_plantilla"])
     logger.info(
-        "[%s] Subiendo %s documentos (esperado Documentos Agregados=%s)",
+        "[%s] Subiendo %s documentos (minimo_razonable Documentos Agregados=%s)",
         cfg.clave, len(paths), esperado_docs,
     )
     cargar_documentos_dropzone(
@@ -271,9 +277,11 @@ def ejecutar_carga_un_documento(driver, wait, cfg: FlujoPagoConfig) -> Path:
                 etiqueta=cfg.clave,
                 prefijo_shot=cfg.clave,
                 esperado=esperado_docs,
+                filas_plantilla=filas_plantilla,
             ),
             etiqueta=cfg.clave,
             esperado=esperado_docs,
+            filas_plantilla=filas_plantilla,
         )
 
     logger.info(
