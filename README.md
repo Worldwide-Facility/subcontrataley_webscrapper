@@ -6,9 +6,11 @@ Scraper Selenium del portal [Subcontrataley](https://www5.subcontrataley.cl/logi
 
 ```
 flows/                         # lógica de cada rama
+auditor/                       # auditor Subcontrataley (cruce GCS/BQ + workflows F1)
 *_cloudrun.py                  # entry points Cloud Run Job (igual que documentos-instalaciones)
 cloudbuild.yaml                # 1 imagen → N jobs
 deploy_jobs.sh                 # deploy manual de todos los jobs
+deploy_auditor.sh              # deploy SOLO del job auditor (SIN scheduler)
 run_flujo.py                   # CLI local por rama
 ```
 
@@ -39,6 +41,7 @@ Misma forma que `cargas_documentos_instalaciones_webscrapper`:
 | `subcontrataley-pagos-mutualidades` | `pagos_mutualidades_cloudrun.py` |
 | `subcontrataley-pagos-cajas` | `pagos_cajas_compensacion_cloudrun.py` |
 | `subcontrataley-documentos-trabajador` | `documentos_trabajador_cloudrun.py` |
+| `subcontrataley-auditor` | `auditor_cloudrun.py` (ver sección Auditor; deploy aparte) |
 
 ### Opción 1: Cloud Build desde Git (recomendado)
 
@@ -180,6 +183,70 @@ legacy (`{cecos}/{Tipo}/...` o `Industry|Security/{cecos}/...`). Si un RUT tiene
 ambos, gana la ruta bajo `Trabajadores/`.
 
 Este repo **no escribe** GCS (solo lista/descarga y sube al portal Subcontrataley).
+
+## Auditor Subcontrataley
+
+Job Cloud Run que, por período (ej. `2026-10`):
+
+1. Obtiene el listado de trabajadores (plantilla Liquidaciones, hoja `Documentos`).
+2. Cruza con GCS (`worldwide-documentos-instalaciones`) y BigQuery `app_clientes.documentos_gcs`.
+3. En modo `descargar`/`completo`, lanza en **serie** los workflows `documentos-{tipo}` del repo
+   `cargas_documentos_instalaciones_webscrapper` con el argumento `objetivo` (F1).
+4. Opcionalmente crea certificados de transferencia (líquido > 0 sin transferencia).
+5. Sube reporte a `gs://worldwide-documentos-instalaciones/auditoria_subcontrataley/{periodo}/`.
+
+**Dependencia:** PR de fase 1 en `Worldwide-Facility/cargas_documentos_instalaciones_webscrapper`
+(variables `DOC_*`, `fuente=lista`, manifiestos en
+`…/ejecuciones_dirigidas/{solicitud}/{job}.json`). Sin ese PR mergeado/desplegado,
+las descargas dirigidas no aplican el filtro por RUT.
+
+**No incluye Cloud Scheduler** (aún no hay horario). Deploy solo del job:
+
+```bash
+bash deploy_auditor.sh          # construye imagen + create/update del job
+SKIP_BUILD=1 bash deploy_auditor.sh   # solo actualiza el job
+```
+
+### Variables
+
+| Variable | Default | Descripción |
+|----------|---------|-------------|
+| `AUDITOR_PERIODO` | mes anterior (Santiago) | `YYYY-MM` (ej. `2026-10`) |
+| `AUDITOR_MODO` | `dry-run` | `dry-run` (solo reporte/plan) \| `descargar` \| `completo` |
+| `AUDITOR_CREAR_TRANSFERENCIAS` | `0` (`1` en `completo`) | Genera/sube certificados de transferencia |
+| `AUDITOR_TIPOS` | `liquidacion,transferencia,cotizaciones,asistencia,finiquito` | `contrato` opt-in |
+| `AUDITOR_FORZAR` | `0` | Pasa `forzar=1` al objetivo F1 |
+| `AUDITOR_INCLUIR_INDUSTRY` | `false` | Cotizaciones siempre `incluir_industry=false` |
+| `AUDITOR_SOLICITUD_ID` | auto | Prefijo de manifiestos / reportes |
+| `AUDITOR_ABORTAR_SI_OCUPADO` | `0` | Si hay ControlRoll/Previred activo: abortar en vez de esperar |
+| `SUBCONTRATALEY_USERNAME` / `PASSWORD` | — | Portal (Secret Manager / env del Job; nunca en código) |
+
+Reglas de cruce: transferencia no se exige si líquido = 0; finiquito solo si
+`cr_reclutamiento_empleados` marca Finiquitado en el mes (`estado` + `fecha_finiquito`;
+**no** usar `fecha_fin_contrato` de la plantilla). Liquidaciones y asistencias nunca
+en paralelo. Un solo `documentos-sync` al final con `SYNC_TIPOS` de lo tocado.
+
+### Ejemplos `gcloud run jobs execute`
+
+```bash
+# Solo auditoría + plan (default)
+gcloud run jobs execute subcontrataley-auditor --region=us-east1 \
+  --update-env-vars="AUDITOR_PERIODO=2026-10,AUDITOR_MODO=dry-run"
+
+# Descargas dirigidas (workflows F1) sin crear transferencias
+gcloud run jobs execute subcontrataley-auditor --region=us-east1 \
+  --update-env-vars="AUDITOR_PERIODO=2026-10,AUDITOR_MODO=descargar,AUDITOR_CREAR_TRANSFERENCIAS=0"
+
+# Completo: descargas + transferencias + re-auditoría + sync
+gcloud run jobs execute subcontrataley-auditor --region=us-east1 \
+  --update-env-vars="AUDITOR_PERIODO=2026-10,AUDITOR_MODO=completo,AUDITOR_CREAR_TRANSFERENCIAS=1"
+```
+
+Tests unitarios (cruce, líquido 0, finiquitado, plan, argumento workflow):
+
+```bash
+python -m pytest tests/test_auditor_cruce.py tests/test_auditor_workflows.py -v
+```
 
 ## Convención de captura
 
